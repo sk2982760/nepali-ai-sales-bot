@@ -14,6 +14,20 @@ const supabase = createClient(
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 /**
+ * Clean AI output by removing reasoning tags and trimming long text
+ */
+function cleanAiResponse(text) {
+  if (!text) return '';
+  // Remove <think>...</think> blocks from reasoning models like DeepSeek or Qwen
+  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  // Ensure the message fits well inside Meta's 2000 character limit
+  if (cleaned.length > 1900) {
+    cleaned = cleaned.substring(0, 1900) + '...';
+  }
+  return cleaned;
+}
+
+/**
  * Fetch available products for a specific store from Supabase database
  */
 async function getStoreInventory(storeId = 'himalayan_wear') {
@@ -166,10 +180,9 @@ TASK:
 3. Respond ONLY in polite, natural Romanized Nepali.
 4. If we sell this item or something similar, tell the customer it's available along with its exact price and stock.
 5. If we don't carry this exact color/item, politely inform them what similar items we have in stock.
-6. DO NOT include any English explanations in brackets or parentheses.
+6. DO NOT include reasoning tags (<think>), brackets, or English text. Keep the message under 300 characters.
 `;
 
-    // Updated active vision model string
     const visionResponse = await groq.chat.completions.create({
       model: 'qwen/qwen3.6-27b',
       messages: [
@@ -184,7 +197,8 @@ TASK:
       temperature: 0.2
     });
 
-    const aiReply = visionResponse.choices[0]?.message?.content || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
+    const rawReply = visionResponse.choices[0]?.message?.content || '';
+    const aiReply = cleanAiResponse(rawReply) || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
 
     await saveChatMessage(senderPsid, 'user', '[Sent an image]');
     await saveChatMessage(senderPsid, 'assistant', aiReply);
@@ -218,7 +232,9 @@ ${inventoryList}
 STRICT OUTPUT RULES:
 1. Respond ONLY in natural Romanized Nepali.
 2. DO NOT write any English sentences or explanations.
-3. Speak like a polite Nepali shopkeeper on Messenger using "Namaste", "Hajur", "Tapai", "Cha", "Chaina".
+3. DO NOT output reasoning tags like <think>.
+4. Speak like a polite Nepali shopkeeper on Messenger using "Namaste", "Hajur", "Tapai", "Cha", "Chaina".
+5. Keep response lengths brief (under 500 characters).
 `;
 
   const messages = [
@@ -260,7 +276,9 @@ STRICT OUTPUT RULES:
     }
   }
 
-  const aiReply = responseMessage.content || 'Hajur, kehi technical samasya aayo. Kripaya feri prayas garnuhos.';
+  const rawReply = responseMessage.content || '';
+  const aiReply = cleanAiResponse(rawReply) || 'Hajur, kehi technical samasya aayo. Kripaya feri prayas garnuhos.';
+  
   await saveChatMessage(senderPsid, 'assistant', aiReply);
 
   return aiReply;
