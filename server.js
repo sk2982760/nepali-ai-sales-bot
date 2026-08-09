@@ -145,8 +145,17 @@ async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_w
   const inventoryList = await getStoreInventory(storeId);
 
   try {
-    // 1. Download image on server and convert to Base64
-    const imageResponse = await fetch(imageUrl);
+    // 1. Download image with browser User-Agent header so Meta CDN permits the download
+    const imageResponse = await fetch(imageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+      }
+    });
+
+    if (!imageResponse.ok) {
+      throw new Error(`Failed to fetch image from Meta CDN: ${imageResponse.statusText}`);
+    }
+
     const arrayBuffer = await imageResponse.arrayBuffer();
     const base64Image = Buffer.from(arrayBuffer).toString('base64');
     const mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
