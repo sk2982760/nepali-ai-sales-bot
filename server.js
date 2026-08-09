@@ -24,10 +24,9 @@ function cleanAiResponse(text) {
   // 1. Remove standard <think>...</think> tags if present
   cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '');
 
-  // 2. If the model logged raw thinking/checklist steps without <think> tags,
-  // extract only the final conversational message starting at "Namaste!" or "Hajur"
-  if (cleaned.includes('Namaste!') || cleaned.includes('Hajur')) {
-    const namasteIndex = cleaned.lastIndexOf('Namaste!');
+  // 2. Extract only the final conversational message starting at "Namaste" or "Hajur"
+  if (cleaned.includes('Namaste') || cleaned.includes('Hajur')) {
+    const namasteIndex = cleaned.lastIndexOf('Namaste');
     const hajurIndex = cleaned.lastIndexOf('Hajur');
     const startIdx = Math.max(namasteIndex, hajurIndex);
     
@@ -189,20 +188,27 @@ async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_w
     const dataUrl = `data:${mimeType};base64,${base64Data}`;
 
     const visionPrompt = `
-You are a sales assistant for "Himalayan Wear" in Nepal.
+You are a warm, extremely polite sales representative for "Himalayan Wear" in Nepal.
 
 CURRENT STORE INVENTORY:
 ${inventoryList}
 
-STRICT OUTPUT INSTRUCTIONS:
-- DO NOT print any thinking steps, reasoning, checklists, or internal evaluation lines.
-- Output ONLY the final customer reply in polite Romanized Nepali starting with "Namaste!".
-- Keep the entire reply short (under 300 characters).
+STRICT LANGUAGE & TONE RULES:
+1. Respond ONLY in extremely polite, natural Romanized Nepali (Aadarthi Bhasa).
+2. NEVER use informal words like "Timi", "Timro", "Kya timi", or "Timi le".
+3. ALWAYS use respectful forms like "Tapai", "Tapai le", "Tapai lai", "Hajur".
+4. Speak like a polite Nepali shopkeeper on Messenger:
+   - "Namaste hajur! Himalayan Wear ma swagat cha."
+   - "Tapai le pathaunu bhayeko photo ma..."
+   - "Hami sanga yo exact item available chaina, tara..."
+   - "Ke tapai lai yo man parcha hajur?"
+5. DO NOT output reasoning tags (<think>), checklists, or English sentences.
+6. Keep the response short (under 300 characters).
 
 TASK:
-1. Identify the item in the image (color, clothing type).
-2. Compare with store inventory above.
-3. Inform customer if available or offer similar stock items in store.
+1. Identify the item in the image (color, apparel type).
+2. Check inventory above.
+3. Tell customer politely if available, or suggest similar items in stock with price.
 `;
 
     const visionResponse = await groq.chat.completions.create({
@@ -220,7 +226,7 @@ TASK:
     });
 
     const rawReply = visionResponse.choices[0]?.message?.content || '';
-    const aiReply = cleanAiResponse(rawReply) || 'Namaste! Photo clear dekhiyana, kripaya punah photo pathaunu hola.';
+    const aiReply = cleanAiResponse(rawReply) || 'Namaste hajur! Photo clear dekhiyana, kripaya punah photo pathaunu hola.';
 
     await saveChatMessage(senderPsid, 'user', '[Sent an image]');
     await saveChatMessage(senderPsid, 'assistant', aiReply);
@@ -229,7 +235,7 @@ TASK:
   } catch (err) {
     console.error('Groq Vision Error:', err.message || err);
 
-    const fallbackReply = 'Hajur, photo analyze garda kehi technical samasya aayo. Kripaya item ko naam text ma lekhera sodhnuhos!';
+    const fallbackReply = 'Namaste hajur, photo analyze garda kehi technical samasya aayo. Kripaya item ko naam text ma lekhera sodhnuhos!';
 
     await saveChatMessage(senderPsid, 'user', '[Sent an image]');
     await saveChatMessage(senderPsid, 'assistant', fallbackReply);
@@ -246,17 +252,20 @@ async function processCustomerMessage(userMessage, senderPsid, storeId = 'himala
   const chatHistory = await getChatHistory(senderPsid);
 
   const systemPrompt = `
-You are a sales assistant for "Himalayan Wear", an online clothing store in Nepal.
+You are a warm, extremely polite sales assistant for "Himalayan Wear", an online clothing store in Nepal.
 
 CURRENT LIVE INVENTORY:
 ${inventoryList}
 
-STRICT OUTPUT RULES:
-1. Respond ONLY in natural Romanized Nepali.
-2. DO NOT write any English sentences or explanations.
-3. DO NOT output reasoning tags or thinking steps.
-4. Speak like a polite Nepali shopkeeper on Messenger using "Namaste", "Hajur", "Tapai", "Cha", "Chaina".
-5. Keep response lengths brief (under 500 characters).
+STRICT LANGUAGE & TONE RULES:
+1. Respond ONLY in natural, polite Romanized Nepali (Aadarthi Bhasa).
+2. NEVER use informal pronouns ("Timi", "Timro"). ALWAYS use polite forms ("Tapai", "Tapai lai", "Hajur").
+3. Use natural, friendly Nepali shopkeeper phrasing:
+   - "Namaste hajur! Himalayan Wear ma swagat cha."
+   - "Hami sanga yo item available cha hajur."
+   - "Tapai ko order confirm garna sakchau."
+4. DO NOT write any English sentences or output reasoning tags (<think>).
+5. Keep response lengths brief (under 400 characters).
 `;
 
   const messages = [
@@ -299,7 +308,7 @@ STRICT OUTPUT RULES:
   }
 
   const rawReply = responseMessage.content || '';
-  const aiReply = cleanAiResponse(rawReply) || 'Hajur, kehi technical samasya aayo. Kripaya feri prayas garnuhos.';
+  const aiReply = cleanAiResponse(rawReply) || 'Namaste hajur, kehi technical samasya aayo. Kripaya feri prayas garnuhos.';
   
   await saveChatMessage(senderPsid, 'assistant', aiReply);
 
