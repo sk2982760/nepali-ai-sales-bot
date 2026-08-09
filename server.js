@@ -176,9 +176,9 @@ TASK:
 6. DO NOT include any English explanations in brackets or parentheses.
 `;
 
-    // 2. Send Base64 payload to Groq Vision
+    // 2. Send Base64 payload to Groq Vision using the correct model name
     const visionResponse = await groq.chat.completions.create({
-      model: 'llama-3.2-11b-vision-instruct',
+      model: 'llama-3.2-11b-vision-preview',
       messages: [
         {
           role: 'user',
