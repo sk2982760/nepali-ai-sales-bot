@@ -210,6 +210,10 @@ STRICT LANGUAGE RULES:
 1. Respond ONLY in natural, polite Romanized Nepali (Aadarthi Bhasa).
 2. NEVER use "Timi". ALWAYS use "Tapai", "Tapai lai", "Hajur".
 3. Keep response brief (under 400 characters).
+
+IMPORTANT ORDER RULE:
+- DO NOT call the saveOrder tool unless the user has explicitly provided their full name, phone number, delivery location, and the product they want to buy. 
+- For casual chats, greetings like "Namaste", or general inquiries, just reply textually and NEVER trigger the tool.
 `;
 
   const messages = [
@@ -247,6 +251,12 @@ STRICT LANGUAGE RULES:
       return orderReply;
     }
   }
+
+  const rawReply = responseMessage.content || '';
+  const aiReply = cleanAiResponse(rawReply) || 'Namaste hajur, kehi technical samasya aayo.';
+  await saveChatMessage(senderPsid, 'assistant', aiReply);
+  return aiReply;
+}
 
   const rawReply = responseMessage.content || '';
   const aiReply = cleanAiResponse(rawReply) || 'Namaste hajur, kehi technical samasya aayo.';
