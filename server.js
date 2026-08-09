@@ -257,10 +257,15 @@ STRICT LANGUAGE RULES:
 /**
  * Message Dispatchers for Meta Graph API & WhatsApp Cloud API
  */
-async function sendMetaTextMessage(senderPsid, responseText, channelId) {
+async function sendMetaTextMessage(senderPsid, responseText, channelId, objectType = 'page') {
   try {
-    // Dynamically choose between the Instagram Account ID or Facebook Page ID
-    const endpointId = (channelId && channelId.startsWith('178')) ? channelId : '1179970958543225';
+    // If it's an Instagram event, use the Instagram Account ID directly
+    let endpointId = '1179970958543225'; // Default Facebook Page ID
+    if (objectType === 'instagram') {
+      endpointId = '17841442829434138'; // Your Instagram Business Account ID
+    } else if (channelId && channelId.startsWith('178')) {
+      endpointId = channelId;
+    }
     
     const res = await fetch(`https://graph.facebook.com/v18.0/${endpointId}/messages?access_token=${process.env.META_ACCESS_TOKEN}`, {
       method: 'POST',
@@ -337,19 +342,16 @@ app.post('/webhook', async (req, res) => {
           console.log(`💬 User (${senderPsid}):`, event.message.text);
           const aiReply = await processCustomerMessage(event.message.text, senderPsid, storeId);
           console.log(`🤖 AI Reply:`, aiReply);
-          await sendMetaTextMessage(senderPsid, aiReply, channelId);
+          await sendMetaTextMessage(senderPsid, aiReply, channelId, body.object); // Pass body.object here
         } else if (event.message && event.message.attachments) {
           const img = event.message.attachments.find(a => a.type === 'image');
           if (img && img.payload && img.payload.url) {
             console.log(`🖼️ User sent an image:`, img.payload.url);
             const aiReply = await processCustomerImage(img.payload.url, senderPsid, storeId);
             console.log(`🤖 AI Reply:`, aiReply);
-            await sendMetaTextMessage(senderPsid, aiReply, channelId);
+            await sendMetaTextMessage(senderPsid, aiReply, channelId, body.object); // Pass body.object here
           }
         }
-      }
-    }
-  } 
   // Handle WhatsApp Messages
   else if (body.object === 'whatsapp_business_account') {
     for (const entry of body.entry) {
