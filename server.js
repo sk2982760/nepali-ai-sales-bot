@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const Groq = require('groq-sdk');
 const { createClient } = require('@supabase/supabase-js');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 app.use(express.json());
@@ -13,7 +12,6 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 /**
  * Fetch available products for a specific store from Supabase database
@@ -40,14 +38,14 @@ async function getStoreInventory(storeId = 'himalayan_wear') {
 }
 
 /**
- * Save chat message to Supabase to maintain multi-turn context
+ * Save chat message to Supabase
  */
 async function saveChatMessage(senderPsid, role, content) {
   try {
     const { error } = await supabase.from('chat_messages').insert([
       { sender_psid: senderPsid, role, content }
     ]);
-    if (error) console.error('Error saving chat message to Supabase:', error);
+    if (error) console.error('Error saving chat message:', error);
   } catch (err) {
     console.error('Error saving chat message:', err);
   }
@@ -65,17 +63,15 @@ async function getChatHistory(senderPsid, limit = 6) {
     .limit(limit);
 
   if (error || !data) return [];
-  // Return in chronological order
   return data.reverse().map(msg => ({ role: msg.role, content: msg.content }));
 }
 
 /**
- * Save customer order into Supabase and automatically deduct stock
+ * Save customer order into Supabase
  */
 async function saveOrder({ customer_name, phone_number, delivery_location, product_title, quantity, total_price_npr, delivery_charge_npr, store_id = 'himalayan_wear' }) {
   const orderQuantity = quantity || 1;
 
-  // 1. Save the Order
   const { data: orderData, error: orderError } = await supabase
     .from('orders')
     .insert([
@@ -97,7 +93,6 @@ async function saveOrder({ customer_name, phone_number, delivery_location, produ
     return { success: false, error: orderError.message };
   }
 
-  // 2. Deduct Stock from Products Table
   const { data: prodData } = await supabase
     .from('products')
     .select('id, stock_quantity')
@@ -116,22 +111,21 @@ async function saveOrder({ customer_name, phone_number, delivery_location, produ
   return { success: true, order: orderData[0] };
 }
 
-// Define tool for Groq function calling
 const orderTool = {
   type: 'function',
   function: {
     name: 'saveOrder',
-    description: 'Save a customer order when full name, phone number, location, product title, and totals are provided.',
+    description: 'Save a customer order when full details are provided.',
     parameters: {
       type: 'object',
       properties: {
-        customer_name: { type: 'string', description: 'Full name of the customer' },
-        phone_number: { type: 'string', description: 'Phone number of the customer' },
-        delivery_location: { type: 'string', description: 'Detailed delivery address or city' },
-        product_title: { type: 'string', description: 'Exact product title ordered' },
-        quantity: { type: 'integer', description: 'Quantity ordered (default 1)' },
-        total_price_npr: { type: 'number', description: 'Total item cost in NPR (excluding delivery fee)' },
-        delivery_charge_npr: { type: 'number', description: 'Delivery fee in NPR (100 for Inside Valley, 200 for Outside Valley)' }
+        customer_name: { type: 'string' },
+        phone_number: { type: 'string' },
+        delivery_location: { type: 'string' },
+        product_title: { type: 'string' },
+        quantity: { type: 'integer' },
+        total_price_npr: { type: 'number' },
+        delivery_charge_npr: { type: 'number' }
       },
       required: ['customer_name', 'phone_number', 'delivery_location', 'product_title', 'total_price_npr', 'delivery_charge_npr']
     }
@@ -139,13 +133,12 @@ const orderTool = {
 };
 
 /**
- * Handle incoming image attachments using Gemini API via direct REST request
+ * Handle incoming image attachments using Groq Vision API
  */
 async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_wear') {
   const inventoryList = await getStoreInventory(storeId);
 
   try {
-    // 1. Download image from Meta CDN
     const imageResponse = await fetch(imageUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
@@ -153,12 +146,13 @@ async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_w
     });
 
     if (!imageResponse.ok) {
-      throw new Error(`Failed to fetch image from Meta CDN: ${imageResponse.statusText}`);
+      throw new Error(`Failed to fetch image: ${imageResponse.statusText}`);
     }
 
     const arrayBuffer = await imageResponse.arrayBuffer();
     const base64Data = Buffer.from(arrayBuffer).toString('base64');
     const mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
+    const dataUrl = `data:${mimeType};base64,${base64Data}`;
 
     const visionPrompt = `
 You are analyzing a photo sent by a customer to an online apparel store "Himalayan Wear" in Nepal.
@@ -175,46 +169,28 @@ TASK:
 6. DO NOT include any English explanations in brackets or parentheses.
 `;
 
-    // 2. Call Gemini API endpoint directly
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
-    
-    const requestBody = {
-      contents: [
+    const visionResponse = await groq.chat.completions.create({
+      model: 'llava-v1.5-7b-4096-preview',
+      messages: [
         {
-          parts: [
-            { text: visionPrompt },
-            {
-              inline_data: {
-                mime_type: mimeType,
-                data: base64Data
-              }
-            }
+          role: 'user',
+          content: [
+            { type: 'text', text: visionPrompt },
+            { type: 'image_url', image_url: { url: dataUrl } }
           ]
         }
-      ]
-    };
-
-    const apiRes = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody)
+      ],
+      temperature: 0.2
     });
 
-    const apiData = await apiRes.json();
-
-    if (!apiRes.ok) {
-      console.error('Gemini REST API Error Payload:', JSON.stringify(apiData));
-      throw new Error(apiData.error?.message || `HTTP ${apiRes.status}`);
-    }
-
-    const aiReply = apiData.candidates?.[0]?.content?.parts?.[0]?.text || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
+    const aiReply = visionResponse.choices[0]?.message?.content || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
 
     await saveChatMessage(senderPsid, 'user', '[Sent an image]');
     await saveChatMessage(senderPsid, 'assistant', aiReply);
 
     return aiReply;
   } catch (err) {
-    console.error('Vision API Detailed Error:', err.message || err);
+    console.error('Groq Vision Error:', err.message || err);
 
     const fallbackReply = 'Hajur, photo analyze garda kehi technical samasya aayo. Kripaya item ko naam text ma lekhera sodhnuhos!';
 
@@ -226,7 +202,7 @@ TASK:
 }
 
 /**
- * Process customer text message with AI function calling and context history
+ * Process customer text message
  */
 async function processCustomerMessage(userMessage, senderPsid, storeId = 'himalayan_wear') {
   const inventoryList = await getStoreInventory(storeId);
@@ -238,25 +214,10 @@ You are a sales assistant for "Himalayan Wear", an online clothing store in Nepa
 CURRENT LIVE INVENTORY:
 ${inventoryList}
 
-STRICT OUTPUT RULES (FAILURE TO FOLLOW THESE IS AN ERROR):
-1. Respond ONLY in natural Romanized Nepali (Nepali written in English script).
+STRICT OUTPUT RULES:
+1. Respond ONLY in natural Romanized Nepali.
 2. DO NOT write any English sentences or explanations.
-3. DO NOT include English translations in brackets or parentheses like "(Hello! How can I help you?)".
-4. Speak like a polite Nepali shopkeeper on Messenger using "Namaste", "Hajur", "Tapai", "Cha", "Chaina".
-
-EXACT RESPONSE EXAMPLES:
-
-User: "hi" or "hello"
-Reply: "Namaste hajur! Himalayan Wear ma swagat chha. Hami hjr ko k sewa garna sakxau?"
-
-User: "shoes available cha?"
-Reply: "Hajur, hamro ma shoes ta available chaina. Hamro ma Hoodies, Graphic Tees, ra Pants haru stock ma chha."
-
-User: "delivery charge kati ho?"
-Reply: "Delivery charge Kathmandu valley bhittra Rs 100 ra valley bahira Rs 200 parchha hajur."
-
-User: "black hoodie ko price"
-Reply: "Hajur, Oversized Black Hoodie ko price Rs 1800 ho. Stock ma available chha. Tapai lai k size chahiyako thiyo?"
+3. Speak like a polite Nepali shopkeeper on Messenger using "Namaste", "Hajur", "Tapai", "Cha", "Chaina".
 `;
 
   const messages = [
@@ -274,8 +235,6 @@ Reply: "Hajur, Oversized Black Hoodie ko price Rs 1800 ho. Stock ma available ch
   });
 
   const responseMessage = response.choices[0]?.message;
-
-  // Save user message to database
   await saveChatMessage(senderPsid, 'user', userMessage);
 
   if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
@@ -307,7 +266,7 @@ Reply: "Hajur, Oversized Black Hoodie ko price Rs 1800 ho. Stock ma available ch
 }
 
 /**
- * Helper function to send messages back to Meta Graph API
+ * Send text message via Meta Graph API
  */
 async function sendTextMessage(senderPsid, responseText) {
   const requestBody = {
@@ -333,7 +292,7 @@ async function sendTextMessage(senderPsid, responseText) {
   }
 }
 
-// Meta Webhook Verification Route
+// Meta Webhook Verification
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -351,7 +310,7 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// Meta Webhook Event Processing
+// Meta Webhook Event Handler
 app.post('/webhook', async (req, res) => {
   const body = req.body;
 
@@ -365,7 +324,6 @@ app.post('/webhook', async (req, res) => {
         const senderPsid = webhookEvent.sender ? webhookEvent.sender.id : null;
         if (!senderPsid) continue;
 
-        // Process Text Message
         if (webhookEvent.message && webhookEvent.message.text) {
           const userText = webhookEvent.message.text;
           console.log(`💬 Message received from ${senderPsid}: "${userText}"`);
@@ -377,9 +335,7 @@ app.post('/webhook', async (req, res) => {
           } catch (err) {
             console.error('❌ Error processing text message:', err);
           }
-        } 
-        // Process Image Attachment
-        else if (webhookEvent.message && webhookEvent.message.attachments) {
+        } else if (webhookEvent.message && webhookEvent.message.attachments) {
           const imageAttachment = webhookEvent.message.attachments.find(att => att.type === 'image');
           
           if (imageAttachment && imageAttachment.payload && imageAttachment.payload.url) {
