@@ -257,13 +257,19 @@ STRICT LANGUAGE RULES:
 /**
  * Message Dispatchers for Meta Graph API & WhatsApp Cloud API
  */
-async function sendMetaTextMessage(senderPsid, responseText) {
+async function sendMetaTextMessage(senderPsid, responseText, channelId = 'me') {
   try {
-    await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${process.env.META_ACCESS_TOKEN}`, {
+    // Uses specific channel ID (Page ID / IG Account ID) if available, or defaults to 'me'
+    const endpointId = channelId || 'me';
+    const res = await fetch(`https://graph.facebook.com/v18.0/${endpointId}/messages?access_token=${process.env.META_ACCESS_TOKEN}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ recipient: { id: senderPsid }, message: { text: responseText } })
     });
+    const data = await res.json();
+    if (data.error) {
+      console.error('Meta Send Error:', data.error);
+    }
   } catch (error) {
     console.error('Error sending Meta message:', error);
   }
@@ -288,7 +294,7 @@ async function sendWhatsAppTextMessage(phoneId, toPhoneNumber, responseText) {
   }
 }
 
-// Webhook Verification (Messenger, IG, WhatsApp use the same verify flow)
+// Webhook Verification
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -310,23 +316,30 @@ app.post('/webhook', async (req, res) => {
   // Handle Messenger & Instagram DMs
   if (body.object === 'page' || body.object === 'instagram') {
     for (const entry of body.entry) {
-      const channelId = entry.id; // Page ID or IG Account ID
+      const channelId = entry.id; // Page ID or Instagram Account ID
       const storeId = await resolveStoreId(channelId);
 
-      if (!entry.messaging) continue;
+      // Normal messaging format
+      let messagingEvents = entry.messaging || [];
 
-      for (const event of entry.messaging) {
+      // Alternate Instagram payload format
+      if (!entry.messaging && entry.changes) {
+        messagingEvents = entry.changes.map(change => change.value).filter(val => val && val.message);
+      }
+
+      for (const event of messagingEvents) {
         const senderPsid = event.sender ? event.sender.id : null;
-        if (!senderPsid) continue;
+        // Ignore echo messages sent by the bot itself
+        if (!senderPsid || (event.message && event.message.is_echo)) continue;
 
         if (event.message && event.message.text) {
           const aiReply = await processCustomerMessage(event.message.text, senderPsid, storeId);
-          await sendMetaTextMessage(senderPsid, aiReply);
+          await sendMetaTextMessage(senderPsid, aiReply, channelId);
         } else if (event.message && event.message.attachments) {
           const img = event.message.attachments.find(a => a.type === 'image');
           if (img && img.payload && img.payload.url) {
             const aiReply = await processCustomerImage(img.payload.url, senderPsid, storeId);
-            await sendMetaTextMessage(senderPsid, aiReply);
+            await sendMetaTextMessage(senderPsid, aiReply, channelId);
           }
         }
       }
