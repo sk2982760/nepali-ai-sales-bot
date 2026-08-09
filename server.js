@@ -257,12 +257,10 @@ STRICT LANGUAGE RULES:
 /**
  * Message Dispatchers for Meta Graph API & WhatsApp Cloud API
  */
-async function sendMetaTextMessage(senderPsid, responseText, channelId = 'me') {
+async function sendMetaTextMessage(senderPsid, responseText, channelId = '1179970958543225') {
   try {
-    // If the channelId is an Instagram Account ID (usually long numbers starting with 178...), 
-    // Meta requires sending via the graph endpoint or ensuring the Page token handles it.
-    // Let's fallback to 'me' or use the explicit channelId if it's a valid Page ID.
-    const endpointId = (channelId && channelId.startsWith('178')) ? 'me' : (channelId || 'me');
+    // Use the explicit Facebook Page ID or channelId instead of 'me'
+    const endpointId = channelId && channelId !== 'me' ? channelId : '1179970958543225';
     
     const res = await fetch(`https://graph.facebook.com/v18.0/${endpointId}/messages?access_token=${process.env.META_ACCESS_TOKEN}`, {
       method: 'POST',
