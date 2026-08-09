@@ -169,8 +169,9 @@ TASK:
 6. DO NOT include any English explanations in brackets or parentheses.
 `;
 
+    // Updated active vision model string
     const visionResponse = await groq.chat.completions.create({
-      model: 'llava-v1.5-7b-4096-preview',
+      model: 'qwen/qwen3.6-27b',
       messages: [
         {
           role: 'user',
