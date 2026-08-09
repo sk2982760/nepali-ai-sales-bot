@@ -139,7 +139,7 @@ const orderTool = {
 };
 
 /**
- * Handle incoming image attachments using Google Gemini 2.5 Flash Vision
+ * Handle incoming image attachments using Google Gemini 1.5 Flash Vision
  */
 async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_wear') {
   const inventoryList = await getStoreInventory(storeId);
@@ -175,8 +175,8 @@ TASK:
 6. DO NOT include any English explanations in brackets or parentheses.
 `;
 
-    // 2. Process image with Gemini 2.5 Flash model
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+    // 2. Process image with correct model string
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
     const result = await model.generateContent([
       visionPrompt,
       {
@@ -194,7 +194,7 @@ TASK:
 
     return aiReply;
   } catch (err) {
-    console.error('Vision API Detailed Error:', err);
+    console.error('Vision API Detailed Error:', err.message || err);
 
     const fallbackReply = 'Hajur, photo analyze garda kehi technical samasya aayo. Kripaya item ko naam text ma lekhera sodhnuhos!';
 
