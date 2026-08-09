@@ -14,16 +14,36 @@ const supabase = createClient(
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 /**
- * Clean AI output by removing reasoning tags and trimming long text
+ * Clean AI output by stripping internal reasoning/thinking steps and enforcing Meta's length limits
  */
 function cleanAiResponse(text) {
   if (!text) return '';
-  // Remove <think>...</think> blocks from reasoning models like DeepSeek or Qwen
-  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  // Ensure the message fits well inside Meta's 2000 character limit
+
+  let cleaned = text;
+
+  // 1. Remove standard <think>...</think> tags if present
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '');
+
+  // 2. If the model logged raw thinking/checklist steps without <think> tags,
+  // extract only the final conversational message starting at "Namaste!" or "Hajur"
+  if (cleaned.includes('Namaste!') || cleaned.includes('Hajur')) {
+    const namasteIndex = cleaned.lastIndexOf('Namaste!');
+    const hajurIndex = cleaned.lastIndexOf('Hajur');
+    const startIdx = Math.max(namasteIndex, hajurIndex);
+    
+    if (startIdx !== -1) {
+      cleaned = cleaned.substring(startIdx);
+    }
+  }
+
+  // 3. Trim extra spaces and outer quote marks
+  cleaned = cleaned.trim().replace(/^["']|["']$/g, '');
+
+  // 4. Enforce Meta's strict length restriction (max 2000 chars)
   if (cleaned.length > 1900) {
     cleaned = cleaned.substring(0, 1900) + '...';
   }
+
   return cleaned;
 }
 
@@ -169,18 +189,20 @@ async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_w
     const dataUrl = `data:${mimeType};base64,${base64Data}`;
 
     const visionPrompt = `
-You are analyzing a photo sent by a customer to an online apparel store "Himalayan Wear" in Nepal.
+You are a sales assistant for "Himalayan Wear" in Nepal.
 
 CURRENT STORE INVENTORY:
 ${inventoryList}
 
+STRICT OUTPUT INSTRUCTIONS:
+- DO NOT print any thinking steps, reasoning, checklists, or internal evaluation lines.
+- Output ONLY the final customer reply in polite Romanized Nepali starting with "Namaste!".
+- Keep the entire reply short (under 300 characters).
+
 TASK:
-1. Identify the item in the image (color, clothing type, style).
-2. Compare it with the live store inventory listed above.
-3. Respond ONLY in polite, natural Romanized Nepali.
-4. If we sell this item or something similar, tell the customer it's available along with its exact price and stock.
-5. If we don't carry this exact color/item, politely inform them what similar items we have in stock.
-6. DO NOT include reasoning tags (<think>), brackets, or English text. Keep the message under 300 characters.
+1. Identify the item in the image (color, clothing type).
+2. Compare with store inventory above.
+3. Inform customer if available or offer similar stock items in store.
 `;
 
     const visionResponse = await groq.chat.completions.create({
@@ -198,7 +220,7 @@ TASK:
     });
 
     const rawReply = visionResponse.choices[0]?.message?.content || '';
-    const aiReply = cleanAiResponse(rawReply) || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
+    const aiReply = cleanAiResponse(rawReply) || 'Namaste! Photo clear dekhiyana, kripaya punah photo pathaunu hola.';
 
     await saveChatMessage(senderPsid, 'user', '[Sent an image]');
     await saveChatMessage(senderPsid, 'assistant', aiReply);
@@ -232,7 +254,7 @@ ${inventoryList}
 STRICT OUTPUT RULES:
 1. Respond ONLY in natural Romanized Nepali.
 2. DO NOT write any English sentences or explanations.
-3. DO NOT output reasoning tags like <think>.
+3. DO NOT output reasoning tags or thinking steps.
 4. Speak like a polite Nepali shopkeeper on Messenger using "Namaste", "Hajur", "Tapai", "Cha", "Chaina".
 5. Keep response lengths brief (under 500 characters).
 `;
