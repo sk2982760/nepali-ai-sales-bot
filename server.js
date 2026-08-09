@@ -313,32 +313,34 @@ app.post('/webhook', async (req, res) => {
   const body = req.body;
   res.status(200).send('EVENT_RECEIVED');
 
+  console.log('📩 INCOMING WEBHOOK EVENT:', JSON.stringify(body, null, 2));
+
   // Handle Messenger & Instagram DMs
   if (body.object === 'page' || body.object === 'instagram') {
     for (const entry of body.entry) {
       const channelId = entry.id; // Page ID or Instagram Account ID
       const storeId = await resolveStoreId(channelId);
 
-      // Normal messaging format
       let messagingEvents = entry.messaging || [];
-
-      // Alternate Instagram payload format
       if (!entry.messaging && entry.changes) {
         messagingEvents = entry.changes.map(change => change.value).filter(val => val && val.message);
       }
 
       for (const event of messagingEvents) {
         const senderPsid = event.sender ? event.sender.id : null;
-        // Ignore echo messages sent by the bot itself
         if (!senderPsid || (event.message && event.message.is_echo)) continue;
 
         if (event.message && event.message.text) {
+          console.log(`💬 User (${senderPsid}):`, event.message.text);
           const aiReply = await processCustomerMessage(event.message.text, senderPsid, storeId);
+          console.log(`🤖 AI Reply:`, aiReply);
           await sendMetaTextMessage(senderPsid, aiReply, channelId);
         } else if (event.message && event.message.attachments) {
           const img = event.message.attachments.find(a => a.type === 'image');
           if (img && img.payload && img.payload.url) {
+            console.log(`🖼️ User sent an image:`, img.payload.url);
             const aiReply = await processCustomerImage(img.payload.url, senderPsid, storeId);
+            console.log(`🤖 AI Reply:`, aiReply);
             await sendMetaTextMessage(senderPsid, aiReply, channelId);
           }
         }
@@ -359,7 +361,9 @@ app.post('/webhook', async (req, res) => {
         const fromNumber = message.from;
 
         if (message.type === 'text') {
+          console.log(`💬 WhatsApp User (${fromNumber}):`, message.text.body);
           const aiReply = await processCustomerMessage(message.text.body, fromNumber, storeId);
+          console.log(`🤖 AI Reply:`, aiReply);
           await sendWhatsAppTextMessage(phoneId, fromNumber, aiReply);
         }
       }
