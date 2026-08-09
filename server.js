@@ -2,18 +2,18 @@ require('dotenv').config();
 const express = require('express');
 const Groq = require('groq-sdk');
 const { createClient } = require('@supabase/supabase-js');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 app.use(express.json());
 
-// Initialize Supabase Client
+// Initialize Clients
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-// Initialize Groq Client
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 /**
  * Fetch available products for a specific store from Supabase database
@@ -139,13 +139,13 @@ const orderTool = {
 };
 
 /**
- * Handle incoming image attachments using Groq Vision AI (via Base64 buffer conversion)
+ * Handle incoming image attachments using Google Gemini 1.5 Flash Vision
  */
 async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_wear') {
   const inventoryList = await getStoreInventory(storeId);
 
   try {
-    // 1. Download image with browser User-Agent header so Meta CDN permits the download
+    // 1. Download image from Meta CDN
     const imageResponse = await fetch(imageUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
@@ -157,9 +157,8 @@ async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_w
     }
 
     const arrayBuffer = await imageResponse.arrayBuffer();
-    const base64Image = Buffer.from(arrayBuffer).toString('base64');
+    const base64Data = Buffer.from(arrayBuffer).toString('base64');
     const mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
-    const dataUrl = `data:${mimeType};base64,${base64Image}`;
 
     const visionPrompt = `
 You are analyzing a photo sent by a customer to an online apparel store "Himalayan Wear" in Nepal.
@@ -176,22 +175,19 @@ TASK:
 6. DO NOT include any English explanations in brackets or parentheses.
 `;
 
-    // 2. Call Groq API using the supported vision model
-    const visionResponse = await groq.chat.completions.create({
-      model: 'qwen/qwen3.6-27b',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: visionPrompt },
-            { type: 'image_url', image_url: { url: dataUrl } }
-          ]
+    // 2. Process image with Gemini 1.5 Flash
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const result = await model.generateContent([
+      visionPrompt,
+      {
+        inlineData: {
+          data: base64Data,
+          mimeType: mimeType
         }
-      ],
-      temperature: 0.2
-    });
+      }
+    ]);
 
-    const aiReply = visionResponse.choices[0]?.message?.content || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
+    const aiReply = result.response.text() || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
     
     await saveChatMessage(senderPsid, 'user', '[Sent an image]');
     await saveChatMessage(senderPsid, 'assistant', aiReply);
@@ -200,7 +196,7 @@ TASK:
   } catch (err) {
     console.error('Vision API Error:', err.message || err);
 
-    const fallbackReply = 'Hajur, photo analyze garne feature filhal technical update ma chha. Kripaya item ko naam text ma lekhera sodhnuhos!';
+    const fallbackReply = 'Hajur, photo analyze garda kehi technical samasya aayo. Kripaya item ko naam text ma lekhera sodhnuhos!';
 
     await saveChatMessage(senderPsid, 'user', '[Sent an image]');
     await saveChatMessage(senderPsid, 'assistant', fallbackReply);
