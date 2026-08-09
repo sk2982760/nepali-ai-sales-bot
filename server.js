@@ -40,6 +40,36 @@ async function getStoreInventory(storeId = 'himalayan_wear') {
 }
 
 /**
+ * Save chat message to Supabase to maintain multi-turn context
+ */
+async function saveChatMessage(senderPsid, role, content) {
+  try {
+    const { error } = await supabase.from('chat_messages').insert([
+      { sender_psid: senderPsid, role, content }
+    ]);
+    if (error) console.error('Error saving chat message to Supabase:', error);
+  } catch (err) {
+    console.error('Error saving chat message:', err);
+  }
+}
+
+/**
+ * Fetch past chat messages for conversation history
+ */
+async function getChatHistory(senderPsid, limit = 6) {
+  const { data, error } = await supabase
+    .from('chat_messages')
+    .select('role, content')
+    .eq('sender_psid', senderPsid)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error || !data) return [];
+  // Return in chronological order
+  return data.reverse().map(msg => ({ role: msg.role, content: msg.content }));
+}
+
+/**
  * Save customer order into Supabase and automatically deduct stock
  */
 async function saveOrder({ customer_name, phone_number, delivery_location, product_title, quantity, total_price_npr, delivery_charge_npr, store_id = 'himalayan_wear' }) {
@@ -109,10 +139,68 @@ const orderTool = {
 };
 
 /**
- * Process customer message with AI function calling support
+ * Handle incoming image attachments using Groq Vision AI (via Base64 buffer conversion)
  */
-async function processCustomerMessage(userMessage, storeId = 'himalayan_wear') {
+async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_wear') {
   const inventoryList = await getStoreInventory(storeId);
+
+  try {
+    // 1. Download image on server and convert to Base64
+    const imageResponse = await fetch(imageUrl);
+    const arrayBuffer = await imageResponse.arrayBuffer();
+    const base64Image = Buffer.from(arrayBuffer).toString('base64');
+    const mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
+    const dataUrl = `data:${mimeType};base64,${base64Image}`;
+
+    const visionPrompt = `
+You are analyzing a photo sent by a customer to an online apparel store "Himalayan Wear" in Nepal.
+
+CURRENT STORE INVENTORY:
+${inventoryList}
+
+TASK:
+1. Identify the item in the image (color, clothing type, style).
+2. Compare it with the live store inventory listed above.
+3. Respond ONLY in polite, natural Romanized Nepali.
+4. If we sell this item or something similar, tell the customer it's available along with its exact price and stock.
+5. If we don't carry this exact color/item, politely inform them what similar items we have in stock.
+6. DO NOT include any English explanations in brackets or parentheses.
+`;
+
+    // 2. Send Base64 payload to Groq Vision
+    const visionResponse = await groq.chat.completions.create({
+      model: 'llama-3.2-11b-vision-instruct',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: visionPrompt },
+            { type: 'image_url', image_url: { url: dataUrl } }
+          ]
+        }
+      ],
+      temperature: 0.2
+    });
+
+    const aiReply = visionResponse.choices[0]?.message?.content || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
+    
+    // Save image interaction to database
+    await saveChatMessage(senderPsid, 'user', '[Sent an image]');
+    await saveChatMessage(senderPsid, 'assistant', aiReply);
+
+    return aiReply;
+  } catch (err) {
+    console.error('Vision API Error:', err);
+    return 'Hajur, photo analyze garda kehi samasya aayo. Kripaya text ma lekhera sodhnuhos.';
+  }
+}
+
+/**
+ * Process customer text message with AI function calling and context history
+ */
+async function processCustomerMessage(userMessage, senderPsid, storeId = 'himalayan_wear') {
+  const inventoryList = await getStoreInventory(storeId);
+  const chatHistory = await getChatHistory(senderPsid);
 
   const systemPrompt = `
 You are a sales assistant for "Himalayan Wear", an online clothing store in Nepal.
@@ -132,7 +220,7 @@ User: "hi" or "hello"
 Reply: "Namaste hajur! Himalayan Wear ma swagat chha. Hami hjr ko k sewa garna sakxau?"
 
 User: "shoes available cha?"
-Reply: "Hajur, hamro ma shoes ta available chaina. Hamro ma Hoodies, Graphic Tees, ra Pants haru stock ma chha. 
+Reply: "Hajur, hamro ma shoes ta available chaina. Hamro ma Hoodies, Graphic Tees, ra Pants haru stock ma chha."
 
 User: "delivery charge kati ho?"
 Reply: "Delivery charge Kathmandu valley bhittra Rs 100 ra valley bahira Rs 200 parchha hajur."
@@ -143,6 +231,7 @@ Reply: "Hajur, Oversized Black Hoodie ko price Rs 1800 ho. Stock ma available ch
 
   const messages = [
     { role: 'system', content: systemPrompt },
+    ...chatHistory,
     { role: 'user', content: userMessage }
   ];
 
@@ -156,6 +245,9 @@ Reply: "Hajur, Oversized Black Hoodie ko price Rs 1800 ho. Stock ma available ch
 
   const responseMessage = response.choices[0]?.message;
 
+  // Save user message to database
+  await saveChatMessage(senderPsid, 'user', userMessage);
+
   if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
     const toolCall = responseMessage.tool_calls[0];
     if (toolCall.function.name === 'saveOrder') {
@@ -166,15 +258,22 @@ Reply: "Hajur, Oversized Black Hoodie ko price Rs 1800 ho. Stock ma available ch
       orderArgs.store_id = storeId;
       const orderResult = await saveOrder(orderArgs);
 
+      let orderReply = '';
       if (orderResult.success) {
-        return `Dhanyabad ${orderArgs.customer_name} hajur! Tapai ko order (Order ID: #${orderResult.order.id}) confirm bhayo. Hami chhitai ${orderArgs.phone_number} ma call garera delivery confirm garnechha.`;
+        orderReply = `Dhanyabad ${orderArgs.customer_name} hajur! Tapai ko order (Order ID: #${orderResult.order.id}) confirm bhayo. Hami chhitai ${orderArgs.phone_number} ma call garera delivery confirm garnechha.`;
       } else {
-        return 'Hajur, order confirm garda kehi technical samasya aayo. Kripaya punah prayas garnuhos.';
+        orderReply = 'Hajur, order confirm garda kehi technical samasya aayo. Kripaya punah prayas garnuhos.';
       }
+
+      await saveChatMessage(senderPsid, 'assistant', orderReply);
+      return orderReply;
     }
   }
 
-  return responseMessage.content || 'Hajur, kehi technical samasya aayo. Kripaya feri prayas garnuhos.';
+  const aiReply = responseMessage.content || 'Hajur, kehi technical samasya aayo. Kripaya feri prayas garnuhos.';
+  await saveChatMessage(senderPsid, 'assistant', aiReply);
+
+  return aiReply;
 }
 
 /**
@@ -204,7 +303,7 @@ async function sendTextMessage(senderPsid, responseText) {
   }
 }
 
-// Meta Webhook Routes
+// Meta Webhook Verification Route
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -222,6 +321,7 @@ app.get('/webhook', (req, res) => {
   }
 });
 
+// Meta Webhook Event Processing
 app.post('/webhook', async (req, res) => {
   const body = req.body;
 
@@ -233,17 +333,36 @@ app.post('/webhook', async (req, res) => {
 
       for (const webhookEvent of entry.messaging) {
         const senderPsid = webhookEvent.sender ? webhookEvent.sender.id : null;
+        if (!senderPsid) continue;
 
-        if (webhookEvent.message && webhookEvent.message.text && senderPsid) {
+        // Process Text Message
+        if (webhookEvent.message && webhookEvent.message.text) {
           const userText = webhookEvent.message.text;
           console.log(`💬 Message received from ${senderPsid}: "${userText}"`);
 
           try {
-            const aiReply = await processCustomerMessage(userText, 'himalayan_wear');
+            const aiReply = await processCustomerMessage(userText, senderPsid, 'himalayan_wear');
             console.log(`🤖 AI Reply: "${aiReply}"`);
             await sendTextMessage(senderPsid, aiReply);
           } catch (err) {
-            console.error('❌ Error processing message:', err);
+            console.error('❌ Error processing text message:', err);
+          }
+        } 
+        // Process Image Attachment
+        else if (webhookEvent.message && webhookEvent.message.attachments) {
+          const imageAttachment = webhookEvent.message.attachments.find(att => att.type === 'image');
+          
+          if (imageAttachment && imageAttachment.payload && imageAttachment.payload.url) {
+            const imageUrl = imageAttachment.payload.url;
+            console.log(`🖼️ Image received from ${senderPsid}: ${imageUrl}`);
+
+            try {
+              const aiReply = await processCustomerImage(imageUrl, senderPsid, 'himalayan_wear');
+              console.log(`🤖 AI Vision Reply: "${aiReply}"`);
+              await sendTextMessage(senderPsid, aiReply);
+            } catch (err) {
+              console.error('❌ Error processing image:', err);
+            }
           }
         }
       }
