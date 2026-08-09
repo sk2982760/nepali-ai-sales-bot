@@ -139,7 +139,7 @@ const orderTool = {
 };
 
 /**
- * Handle incoming image attachments using Google Gemini 1.5 Flash Vision
+ * Handle incoming image attachments using Google Gemini Flash Vision
  */
 async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_wear') {
   const inventoryList = await getStoreInventory(storeId);
@@ -175,8 +175,8 @@ TASK:
 6. DO NOT include any English explanations in brackets or parentheses.
 `;
 
-    // 2. Process image with correct model string
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    // 2. Process image with explicit version tag
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
     const result = await model.generateContent([
       visionPrompt,
       {
