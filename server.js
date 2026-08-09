@@ -176,9 +176,9 @@ TASK:
 6. DO NOT include any English explanations in brackets or parentheses.
 `;
 
-    // 2. Call Groq API for image completion
+    // 2. Call Groq API using the supported vision model
     const visionResponse = await groq.chat.completions.create({
-      model: 'llama-3.2-90b-vision-preview',
+      model: 'qwen/qwen3.6-27b',
       messages: [
         {
           role: 'user',
