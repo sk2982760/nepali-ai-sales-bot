@@ -259,8 +259,11 @@ STRICT LANGUAGE RULES:
  */
 async function sendMetaTextMessage(senderPsid, responseText, channelId = 'me') {
   try {
-    // Uses specific channel ID (Page ID / IG Account ID) if available, or defaults to 'me'
-    const endpointId = channelId || 'me';
+    // If the channelId is an Instagram Account ID (usually long numbers starting with 178...), 
+    // Meta requires sending via the graph endpoint or ensuring the Page token handles it.
+    // Let's fallback to 'me' or use the explicit channelId if it's a valid Page ID.
+    const endpointId = (channelId && channelId.startsWith('178')) ? 'me' : (channelId || 'me');
+    
     const res = await fetch(`https://graph.facebook.com/v18.0/${endpointId}/messages?access_token=${process.env.META_ACCESS_TOKEN}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -269,6 +272,8 @@ async function sendMetaTextMessage(senderPsid, responseText, channelId = 'me') {
     const data = await res.json();
     if (data.error) {
       console.error('Meta Send Error:', data.error);
+    } else {
+      console.log('✅ Meta Message Sent Successfully to:', senderPsid);
     }
   } catch (error) {
     console.error('Error sending Meta message:', error);
