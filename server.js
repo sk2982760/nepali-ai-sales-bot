@@ -176,9 +176,9 @@ TASK:
 6. DO NOT include any English explanations in brackets or parentheses.
 `;
 
-    // 2. Send Base64 payload to Groq Vision using the correct model name
+    // 2. Call Groq API for image completion
     const visionResponse = await groq.chat.completions.create({
-      model: 'llama-3.2-11b-vision-preview',
+      model: 'llama-3.2-90b-vision-preview',
       messages: [
         {
           role: 'user',
@@ -193,14 +193,19 @@ TASK:
 
     const aiReply = visionResponse.choices[0]?.message?.content || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
     
-    // Save image interaction to database
     await saveChatMessage(senderPsid, 'user', '[Sent an image]');
     await saveChatMessage(senderPsid, 'assistant', aiReply);
 
     return aiReply;
   } catch (err) {
-    console.error('Vision API Error:', err);
-    return 'Hajur, photo analyze garda kehi samasya aayo. Kripaya text ma lekhera sodhnuhos.';
+    console.error('Vision API Error:', err.message || err);
+
+    const fallbackReply = 'Hajur, photo analyze garne feature filhal technical update ma chha. Kripaya item ko naam text ma lekhera sodhnuhos!';
+
+    await saveChatMessage(senderPsid, 'user', '[Sent an image]');
+    await saveChatMessage(senderPsid, 'assistant', fallbackReply);
+
+    return fallbackReply;
   }
 }
 
