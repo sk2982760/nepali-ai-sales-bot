@@ -139,7 +139,7 @@ const orderTool = {
 };
 
 /**
- * Handle incoming image attachments using Google Gemini Flash Vision
+ * Handle incoming image attachments using Gemini API via direct REST request
  */
 async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_wear') {
   const inventoryList = await getStoreInventory(storeId);
@@ -175,20 +175,40 @@ TASK:
 6. DO NOT include any English explanations in brackets or parentheses.
 `;
 
-    // 2. Process image with explicit version tag
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
-    const result = await model.generateContent([
-      visionPrompt,
-      {
-        inlineData: {
-          data: base64Data,
-          mimeType: mimeType
-        }
-      }
-    ]);
-
-    const aiReply = result.response.text() || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
+    // 2. Call Gemini API endpoint directly
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
     
+    const requestBody = {
+      contents: [
+        {
+          parts: [
+            { text: visionPrompt },
+            {
+              inline_data: {
+                mime_type: mimeType,
+                data: base64Data
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const apiRes = await fetch(geminiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody)
+    });
+
+    const apiData = await apiRes.json();
+
+    if (!apiRes.ok) {
+      console.error('Gemini REST API Error Payload:', JSON.stringify(apiData));
+      throw new Error(apiData.error?.message || `HTTP ${apiRes.status}`);
+    }
+
+    const aiReply = apiData.candidates?.[0]?.content?.parts?.[0]?.text || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
+
     await saveChatMessage(senderPsid, 'user', '[Sent an image]');
     await saveChatMessage(senderPsid, 'assistant', aiReply);
 
