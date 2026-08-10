@@ -142,7 +142,7 @@ const orderTool = {
   type: 'function',
   function: {
     name: 'saveOrder',
-    description: 'Save an order ONLY when the user provides NEW order details (Name, Phone Number, Delivery Address). DO NOT call this if the order was already confirmed.',
+    description: 'Save an order ONLY when the customer specifically asks to place/confirm the order in their CURRENT message AND provides complete details (Name, Phone Number, Delivery Address).',
     parameters: {
       type: 'object',
       properties: {
@@ -170,19 +170,19 @@ async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_w
     const dataUrl = `data:${mimeType};base64,${base64Data}`;
 
     const visionPrompt = `
-You are a polite online customer executive in Kathmandu speaking natural Romanized Nepali (Aadarthi Bhasa).
+You are a polite customer assistant for "Himalayan Wear" in Kathmandu speaking natural Romanized Nepali.
 
 Current Available Inventory:
 ${inventoryList}
 
 RULES:
-1. Speak purely in authentic Nepali.
-2. NO Hindi words ("aur", "sath", "chahiye"). Use native Nepali terms ("ra", "sanga", "chahiyeko").
+1. Speak purely in simple, authentic Nepali.
+2. NO Hindi words ("aur", "sath", "chahiye", "koi").
 3. Keep response brief (1-2 sentences).
 
-RESPONSE EXAMPLES:
+EXAMPLES:
 - In stock: "Hajur, yo design hamro ma uplabdha chha! Price NPR 1200 ho. Order garne ho hajur?"
-- Out of stock: "Hajur, yesto exact design ta aile stock ma chhaina. Hamro aru available collection dekhaum?"
+- Out of stock: "Hajur, yesto exact design ta aile stock ma chhaina."
 `;
 
     const visionResponse = await groq.chat.completions.create({
@@ -216,42 +216,54 @@ async function processCustomerMessage(userMessage, senderPsid, storeId = 'himala
   const inventoryList = await getStoreInventory(storeId);
   const chatHistory = await getChatHistory(senderPsid);
 
-  // Safeguard: Check if an order was already confirmed in recent history
+  const lowerMsg = userMessage.toLowerCase().trim();
+
+  // Guardrail 1: Detect explicit order decline or delay keywords
+  const orderDeclinedOrDelayed = lowerMsg.includes('paxi') || 
+                                 lowerMsg.includes('pachi') || 
+                                 lowerMsg.includes('ahile gardina') || 
+                                 lowerMsg.includes('decide garera') || 
+                                 lowerMsg.includes('no') || 
+                                 lowerMsg.includes('nai');
+
+  // Guardrail 2: Detect simple acknowledgement phrases
+  const isSimpleAck = lowerMsg === 'huss' || lowerMsg === 'okay' || lowerMsg === 'ok' || lowerMsg === 'dhanyabad' || lowerMsg === 'thank you';
+
+  // Check if an order was already confirmed in recent history
   const lastAssistantMsg = [...chatHistory].reverse().find(m => m.role === 'assistant');
   const isOrderAlreadyConfirmed = lastAssistantMsg && lastAssistantMsg.content.includes('confirm bhayo');
 
+  // Disable tool calling if user declined, sent a simple ack, or order is already confirmed
+  const shouldDisableTools = isOrderAlreadyConfirmed || orderDeclinedOrDelayed || isSimpleAck;
+
   const systemPrompt = `
-You are a polite, professional, and native sales executive for "Himalayan Wear" in Kathmandu, Nepal.
+You are a polite, natural, and helpful sales assistant for "Himalayan Wear" in Kathmandu, Nepal.
 
 STORE LIVE INVENTORY:
 ${inventoryList}
 
-CORE LANGUAGE RULES:
-- Speak ONLY in clear, natural Romanized Nepali (Aadarthi Bhasa).
-- NEVER use Hindi words (e.g., NEVER use "aur", "chahiye", "karne sakchu", "puchnu", "tarik").
-- ALWAYS use proper Nepali: "and" = "ra", "with" = "sanga", "send/tell" = "pathaunu"/"bataunu", "need" = "chahiyeko".
-- NEVER output square brackets [] in your responses. Output real text directly.
+STRICT LANGUAGE & PHRASING DIRECTIVES:
+- Speak strictly in clear, natural Romanized Nepali (Aadarthi Bhasa).
+- Maintain short, concise sentences (1-2 sentences maximum).
+- FORBIDDEN WORDS: NEVER use "koi", "aur", "sath", "chahiye", "karne sakchu", "puchnu", "tarik".
+- USE NATURAL NEPALI EQUIVALENTS:
+  * "No problem" -> "Hajur, kehi pharak pardaina."
+  * "Whenever you decide" -> "Hajur le decide garepachhi khabar garnuhola hai."
+  * "If you want to order" -> "Order garna chahanuhunchha bhane name, phone number ra address pathaunu hola."
 
-CATEGORY LOGIC & OUT OF STOCK RULES:
-1. Always check the inventory carefully before answering.
-2. If the user asks for an item NOT in inventory (e.g., Saree, Black Pant), directly say:
-   "Hajur, [item name] ta aile stock ma chhaina." (Replace [item name] with the exact missing item, e.g., "Sari", "Black pant").
-3. DO NOT offer unrelated clothing categories as alternatives!
-   - Example: If user asks for "Pant", DO NOT offer "Hoodie" or "Tee".
-   - Offer an alternative ONLY if it belongs to the SAME clothing category (e.g. suggest Khaki Cargo Pant when Black Pant is missing).
-   - If no similar category item exists, simply say stock is unavailable.
+REQUEST TO SPEAK TO OWNER / HUMAN MANAGER:
+- If the customer asks to speak to the owner or manager, say:
+  "Hajur, maile tapai ko message owner lai forward gardiyeko chhu. Unale chhitai tapai lai contact garnuhunechha hai!"
+- NEVER invent or output fake phone numbers.
 
-CONVERSATIONAL LOGIC:
-- Greeting ("Hi", "Hello", "Namaste"): "Namaste hajur! Himalayan Wear ma swagat chha."
-- Pricing: State product name and price directly in NPR.
-- Discounts: State that prices are fixed clearly and politely.
-- Delivery Charges: Inside Valley NPR 100, Outside Valley NPR 200.
-- Gratitude/Closing: "Sorry for inconvenience! Feri arko choti samjhanu hai. Dhanyabad!"
+STOCK & INVENTORY RULES:
+- Always verify stock in inventory before answering.
+- If an item is missing, directly say it's out of stock.
+- Never suggest completely unrelated product categories (e.g., do not pitch hoodies when asked for pants).
 
-ORDER TOOL RULES:
-- NEVER call saveOrder if the order was already confirmed in this session.
-- NEVER call saveOrder on general closing phrases like "Thank you", "Huss", or "Dhanyabad".
-- Call saveOrder ONLY when the user provides actual Name, Phone Number, and Address.
+CRITICAL TOOL CALLING INSTRUCTION:
+- DO NOT call saveOrder when the user says "Huss", "Paxi garxu", "Decide garera", "Thank you", or asks a general question.
+- Call saveOrder ONLY when the customer explicitly provides their Name, Phone Number, and Address with direct intent to place the order now.
 `;
 
   const messages = [
@@ -260,8 +272,7 @@ ORDER TOOL RULES:
     { role: 'user', content: userMessage }
   ];
 
-  // Disable tool calling if order was already confirmed to prevent duplicates
-  const tools = isOrderAlreadyConfirmed ? undefined : [orderTool];
+  const tools = shouldDisableTools ? undefined : [orderTool];
 
   const response = await groq.chat.completions.create({
     messages,
@@ -273,7 +284,7 @@ ORDER TOOL RULES:
   const responseMessage = response.choices[0]?.message;
   await saveChatMessage(senderPsid, 'user', userMessage);
 
-  if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0 && !isOrderAlreadyConfirmed) {
+  if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0 && !shouldDisableTools) {
     const toolCall = responseMessage.tool_calls[0];
     if (toolCall.function.name === 'saveOrder') {
       const orderArgs = typeof toolCall.function.arguments === 'string'
