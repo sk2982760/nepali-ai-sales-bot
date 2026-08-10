@@ -7,7 +7,7 @@ const app = express();
 app.use(express.json());
 
 // ---------------------------------------------------------
-// BASIC SETUP
+// BASIC SETUP & DEDUPLICATION
 // ---------------------------------------------------------
 
 const processedMessageIds = new Set();
@@ -41,7 +41,7 @@ function cleanAiResponse(text) {
 }
 
 // ---------------------------------------------------------
-// LANGUAGE / PRODUCT NORMALIZATION
+// LANGUAGE & PRODUCT NORMALIZATION
 // ---------------------------------------------------------
 
 function normalizeText(text = '') {
@@ -53,12 +53,6 @@ function normalizeText(text = '') {
     .trim();
 }
 
-/*
- * These are not response words.
- * They are search aliases so that customer language such as
- * "tshirt", "tee", "t-shirt", "pantaloon", etc. can find the
- * correct product category.
- */
 const PRODUCT_ALIASES = {
   tshirt: ['tshirt', 't-shirt', 'tee', 'tees', 't shirt'],
   shirt: ['shirt', 'shirts'],
@@ -78,7 +72,7 @@ const PRODUCT_ALIASES = {
 const COLOR_ALIASES = {
   red: ['red', 'raatop', 'rato', 'lal'],
   blue: ['blue', 'nilo', 'neelo'],
-  black: ['black', 'kalo', 'kalo'],
+  black: ['black', 'kalo'],
   white: ['white', 'seto', 'seeto'],
   green: ['green', 'hariyo', 'hario'],
   yellow: ['yellow', 'pahelo'],
@@ -95,7 +89,6 @@ function expandSearchTokens(text) {
   const normalized = normalizeText(text);
   const tokens = new Set(normalized.split(/\s+/).filter(Boolean));
 
-  // Add canonical category/color tokens.
   for (const [canonical, aliases] of Object.entries(PRODUCT_ALIASES)) {
     if (aliases.some(alias => normalized.includes(alias))) {
       tokens.add(canonical);
@@ -121,7 +114,6 @@ function getDetectedCategories(text) {
     }
   }
 
-  // pant/trouser are treated as the same broad category
   if (categories.has('pant') || categories.has('trouser')) {
     categories.add('pant');
     categories.add('trouser');
@@ -143,14 +135,7 @@ function getDetectedColors(text) {
   return colors;
 }
 
-/*
- * Deterministic product matching.
- *
- * IMPORTANT:
- * The AI is NOT allowed to decide which unrelated product to recommend.
- * We first find products that actually match the customer's request.
- * The AI only writes the human response using those results.
- */
+// Deterministic product matching to restrict LLM suggestions
 function findRelevantProducts(userMessage, chatHistory, inventory) {
   const recentUserMessages = chatHistory
     .filter(m => m.role === 'user')
@@ -158,12 +143,6 @@ function findRelevantProducts(userMessage, chatHistory, inventory) {
     .map(m => m.content)
     .filter(Boolean);
 
-  // Example:
-  // "Malai red shirt chahiyeko thiyo"
-  // followed by:
-  // "Haina red ma nai chahiyeko thiyo"
-  //
-  // We combine recent context so "red" still remembers "shirt".
   const searchText = [...recentUserMessages, userMessage].join(' ');
 
   const queryTokens = expandSearchTokens(searchText);
@@ -176,13 +155,11 @@ function findRelevantProducts(userMessage, chatHistory, inventory) {
 
     let score = 0;
 
-    // Exact phrase is very strong evidence.
     const normalizedCurrent = normalizeText(userMessage);
     if (normalizedCurrent && title.includes(normalizedCurrent)) {
       score += 100;
     }
 
-    // Category matching.
     const productCategories = getDetectedCategories(title);
     for (const category of queryCategories) {
       if (productCategories.has(category)) {
@@ -190,7 +167,6 @@ function findRelevantProducts(userMessage, chatHistory, inventory) {
       }
     }
 
-    // Color matching.
     const productColors = getDetectedColors(title);
     for (const color of queryColors) {
       if (productColors.has(color)) {
@@ -198,15 +174,12 @@ function findRelevantProducts(userMessage, chatHistory, inventory) {
       }
     }
 
-    // Normal word overlap.
     for (const token of queryTokens) {
       if (token.length >= 3 && titleTokens.has(token)) {
         score += 8;
       }
     }
 
-    // Partial word overlap for product names such as "oversized",
-    // "graphic", "cotton", etc.
     const rawQueryWords = normalizeText(searchText)
       .split(/\s+/)
       .filter(w => w.length >= 4);
@@ -217,14 +190,6 @@ function findRelevantProducts(userMessage, chatHistory, inventory) {
       }
     }
 
-    /*
-     * If the customer clearly asked for a category, penalize a
-     * different category heavily.
-     *
-     * Example:
-     * "red shirt" must NOT produce "graphic tee white" just because
-     * "red" happened to appear in some generic conversation context.
-     */
     if (queryCategories.size > 0) {
       const categoryMatched = [...queryCategories].some(c =>
         productCategories.has(c)
@@ -235,10 +200,6 @@ function findRelevantProducts(userMessage, chatHistory, inventory) {
       }
     }
 
-    /*
-     * If a specific color is requested, a product with another
-     * explicitly named color should not be suggested as the answer.
-     */
     if (queryColors.size > 0 && productColors.size > 0) {
       const colorMatched = [...queryColors].some(c =>
         productColors.has(c)
@@ -255,7 +216,6 @@ function findRelevantProducts(userMessage, chatHistory, inventory) {
     };
   });
 
-  // Only return products with meaningful relevance.
   return scored
     .filter(p => p.relevance_score >= 20)
     .sort((a, b) => b.relevance_score - a.relevance_score)
@@ -263,7 +223,7 @@ function findRelevantProducts(userMessage, chatHistory, inventory) {
 }
 
 // ---------------------------------------------------------
-// INVENTORY
+// INVENTORY FUNCTIONS
 // ---------------------------------------------------------
 
 async function getStoreInventory(storeId = 'himalayan_wear') {
@@ -299,7 +259,7 @@ function formatProducts(products) {
 }
 
 // ---------------------------------------------------------
-// CHAT HISTORY
+// CHAT HISTORY DATABASE FUNCTIONS
 // ---------------------------------------------------------
 
 async function saveChatMessage(senderPsid, role, content) {
@@ -335,7 +295,7 @@ async function getChatHistory(senderPsid, limit = 10) {
 }
 
 // ---------------------------------------------------------
-// SIMPLE INTENT DETECTION
+// INTENT DETECTION
 // ---------------------------------------------------------
 
 function detectIntent(userMessage, chatHistory = []) {
@@ -422,8 +382,6 @@ function detectIntent(userMessage, chatHistory = []) {
     return 'greeting';
   }
 
-  // If a previous turn was clearly about a product and the new message
-  // contains color/category/size words, treat it as a product follow-up.
   const hasProductContext = chatHistory.some(
     m =>
       m.role === 'user' &&
@@ -442,7 +400,7 @@ function detectIntent(userMessage, chatHistory = []) {
 }
 
 // ---------------------------------------------------------
-// ORDER TOOL
+// ORDER TOOL DEFINITION
 // ---------------------------------------------------------
 
 const orderTool = {
@@ -496,7 +454,7 @@ const orderTool = {
 };
 
 // ---------------------------------------------------------
-// ORDER DATABASE SAVE
+// ORDER SAVE LOGIC
 // ---------------------------------------------------------
 
 async function saveOrder({
@@ -547,7 +505,6 @@ async function saveOrder({
     };
   }
 
-  // Exact-ish product lookup.
   const { data: prodData } = await supabase
     .from('products')
     .select('id, stock_quantity')
@@ -575,7 +532,7 @@ async function saveOrder({
 }
 
 // ---------------------------------------------------------
-// IMAGE / VISION
+// IMAGE / VISION PROCESSING
 // ---------------------------------------------------------
 
 async function processCustomerImage(
@@ -643,21 +600,12 @@ STRICT RULES:
       cleanAiResponse(rawReply) ||
       'Hajur, photo bata item clear rupma chinna sakiyena. Kripaya product ko naam wa photo feri pathaunu hola.';
 
-    await saveChatMessage(
-      senderPsid,
-      'user',
-      '[Sent an image]'
-    );
-    await saveChatMessage(
-      senderPsid,
-      'assistant',
-      aiReply
-    );
+    await saveChatMessage(senderPsid, 'user', '[Sent an image]');
+    await saveChatMessage(senderPsid, 'assistant', aiReply);
 
     return aiReply;
   } catch (err) {
     console.error('Vision API Error:', err);
-
     return 'Hajur, photo herda kehi samasya aayo. Kripaya product ko naam wa photo feri pathaunu hola.';
   }
 }
@@ -676,10 +624,7 @@ async function processCustomerMessage(
 
   const lowerMsg = normalizeText(userMessage);
 
-  // -------------------------------------------------------
   // Deterministic guardrails
-  // -------------------------------------------------------
-
   const orderDeclinedOrDelayed =
     lowerMsg.includes('paxi') ||
     lowerMsg.includes('pachi') ||
@@ -709,10 +654,6 @@ async function processCustomerMessage(
 
   const intent = detectIntent(userMessage, chatHistory);
 
-  /*
-   * This is the most important part:
-   * only send genuinely relevant products to the AI.
-   */
   const relevantProducts = findRelevantProducts(
     userMessage,
     chatHistory,
@@ -728,11 +669,6 @@ async function processCustomerMessage(
 
   const isProductQuestion = productQuestionIntents.has(intent);
 
-  /*
-   * If the customer asks about a product and we have no matching
-   * product, explicitly tell the model there is NO product to
-   * recommend. This prevents "red shirt" -> "white graphic tee".
-   */
   const productContext = isProductQuestion
     ? formatProducts(relevantProducts)
     : 'Product lookup not required for this message.';
@@ -745,10 +681,6 @@ async function processCustomerMessage(
     orderDeclinedOrDelayed ||
     isSimpleAck ||
     intent !== 'order';
-
-  // -------------------------------------------------------
-  // SYSTEM PROMPT
-  // -------------------------------------------------------
 
   const systemPrompt = `
 You are the sales assistant for "Himalayan Wear", a clothing store in Kathmandu, Nepal.
@@ -944,42 +876,30 @@ The second response is forbidden because the customer did not ask for a graphic 
     { role: 'user', content: userMessage }
   ];
 
-  const tools = shouldDisableTools
-    ? undefined
-    : [orderTool];
+  const tools = shouldDisableTools ? undefined : [orderTool];
 
   try {
-    const response =
-      await groq.chat.completions.create({
-        messages,
-        model: 'llama-3.3-70b-versatile',
-        temperature: 0.15,
-        ...(tools && {
-          tools,
-          tool_choice: 'auto'
-        })
-      });
+    const response = await groq.chat.completions.create({
+      messages,
+      model: 'llama-3.3-70b-versatile',
+      temperature: 0.15,
+      ...(tools && {
+        tools,
+        tool_choice: 'auto'
+      })
+    });
 
-    const responseMessage =
-      response.choices[0]?.message;
+    const responseMessage = response.choices[0]?.message;
 
-    await saveChatMessage(
-      senderPsid,
-      'user',
-      userMessage
-    );
+    await saveChatMessage(senderPsid, 'user', userMessage);
 
-    // -----------------------------------------------------
-    // ORDER TOOL
-    // -----------------------------------------------------
-
+    // Handling tool execution
     if (
       responseMessage.tool_calls &&
       responseMessage.tool_calls.length > 0 &&
       !shouldDisableTools
     ) {
-      const toolCall =
-        responseMessage.tool_calls[0];
+      const toolCall = responseMessage.tool_calls[0];
 
       if (toolCall.function.name === 'saveOrder') {
         let orderArgs;
@@ -987,106 +907,58 @@ The second response is forbidden because the customer did not ask for a graphic 
         try {
           orderArgs =
             typeof toolCall.function.arguments === 'string'
-              ? JSON.parse(
-                  toolCall.function.arguments
-                )
+              ? JSON.parse(toolCall.function.arguments)
               : toolCall.function.arguments;
         } catch (parseError) {
-          console.error(
-            'Order tool JSON parse error:',
-            parseError
-          );
+          console.error('Order tool JSON parse error:', parseError);
 
           const errorReply =
             'Hajur, order details confirm garda kehi samasya aayo. Kripaya name, phone number ra address feri pathaunu hola.';
 
-          await saveChatMessage(
-            senderPsid,
-            'assistant',
-            errorReply
-          );
-
+          await saveChatMessage(senderPsid, 'assistant', errorReply);
           return errorReply;
         }
 
         orderArgs.store_id = storeId;
 
-        /*
-         * Safety check:
-         * Never let the model order a product that was not actually
-         * found in the relevant inventory list.
-         */
-        const matchedProduct =
-          relevantProducts.find(
-            p =>
-              normalizeText(p.title) ===
-              normalizeText(orderArgs.product_title)
-          );
+        const matchedProduct = relevantProducts.find(
+          p => normalizeText(p.title) === normalizeText(orderArgs.product_title)
+        );
 
         if (!matchedProduct) {
           const invalidProductReply =
             'Hajur, tapai le bhannubhayeko exact product confirm garna sakiena. Kripaya product ko naam wa photo pathaunu hola.';
 
-          await saveChatMessage(
-            senderPsid,
-            'assistant',
-            invalidProductReply
-          );
-
+          await saveChatMessage(senderPsid, 'assistant', invalidProductReply);
           return invalidProductReply;
         }
 
-        orderArgs.product_title =
-          matchedProduct.title;
-
+        orderArgs.product_title = matchedProduct.title;
         orderArgs.total_price_npr =
-          Number(matchedProduct.price_npr) *
-          Number(orderArgs.quantity || 1);
+          Number(matchedProduct.price_npr) * Number(orderArgs.quantity || 1);
 
-        const orderResult =
-          await saveOrder(orderArgs);
+        const orderResult = await saveOrder(orderArgs);
 
         let orderReply = '';
-
         if (orderResult.success) {
-          orderReply =
-            `Dhanyabad ${orderArgs.customer_name} hajur! Tapai ko order #${orderResult.order.id} confirm bhayo. Hami chhitai ${orderArgs.phone_number} ma call garera delivery confirm garnechhau.`;
+          orderReply = `Dhanyabad ${orderArgs.customer_name} hajur! Tapai ko order #${orderResult.order.id} confirm bhayo. Hami chhitai ${orderArgs.phone_number} ma call garera delivery confirm garnechhau.`;
         } else {
           orderReply =
             'Hajur, order confirm garda kehi samasya aayo. Kripaya name, phone number ra address feri check garera pathaunu hola.';
         }
 
-        await saveChatMessage(
-          senderPsid,
-          'assistant',
-          orderReply
-        );
-
+        await saveChatMessage(senderPsid, 'assistant', orderReply);
         return orderReply;
       }
     }
 
-    // -----------------------------------------------------
-    // NORMAL AI RESPONSE
-    // -----------------------------------------------------
+    // Normal Text Response handling
+    let rawReply = responseMessage.content || '';
+    let aiReply = cleanAiResponse(rawReply);
 
-    let rawReply =
-      responseMessage.content || '';
-
-    let aiReply =
-      cleanAiResponse(rawReply);
-
-    /*
-     * Extra safety:
-     * If a product question has no relevant product, do not trust
-     * the model if it invents/recommends something else.
-     *
-     * We replace it with a safe, natural response.
-     */
+    // Hard fallback if deterministic search found zero relevant products
     if (noRelevantProduct) {
-      const requestedColors = [
-        ...getDetectedColors(userMessage)
-      ];
+      const requestedColors = [...getDetectedColors(userMessage)];
       const requestedCategories = [
         ...getDetectedCategories(
           [...chatHistory, { role: 'user', content: userMessage }]
@@ -1099,74 +971,48 @@ The second response is forbidden because the customer did not ask for a graphic 
       let requestedThing = '';
 
       if (requestedColors.length && requestedCategories.length) {
-        requestedThing =
-          `${requestedColors[0]} ${requestedCategories[0]}`;
+        requestedThing = `${requestedColors[0]} ${requestedCategories[0]}`;
       } else if (requestedCategories.length) {
-        requestedThing =
-          requestedCategories[0];
+        requestedThing = requestedCategories[0];
       } else if (requestedColors.length) {
-        requestedThing =
-          `${requestedColors[0]} color ko item`;
+        requestedThing = `${requestedColors[0]} color ko item`;
       } else {
         requestedThing = 'tapai le khojnu bhayeko item';
       }
 
-      aiReply =
-        `Hajur, ${requestedThing} aile hamro stock ma bhetiyena.`;
+      aiReply = `Hajur, ${requestedThing} aile hamro stock ma bhetiyena.`;
     }
 
     if (!aiReply) {
-      aiReply =
-        'Hajur, kehi samasya aayo. Kripaya feri sodhnuhola.';
+      aiReply = 'Hajur, kehi samasya aayo. Kripaya feri sodhnuhola.';
     }
 
-    await saveChatMessage(
-      senderPsid,
-      'assistant',
-      aiReply
-    );
-
+    await saveChatMessage(senderPsid, 'assistant', aiReply);
     return aiReply;
   } catch (err) {
-    console.error(
-      'Groq processing error:',
-      err
-    );
+    console.error('Groq processing error:', err);
 
     const fallback =
       'Hajur, aile message process garda kehi samasya aayo. Kripaya feri sodhnuhola.';
 
-    await saveChatMessage(
-      senderPsid,
-      'user',
-      userMessage
-    );
-    await saveChatMessage(
-      senderPsid,
-      'assistant',
-      fallback
-    );
+    await saveChatMessage(senderPsid, 'user', userMessage);
+    await saveChatMessage(senderPsid, 'assistant', fallback);
 
     return fallback;
   }
 }
 
 // ---------------------------------------------------------
-// META SEND MESSAGE
+// META SEND MESSAGE API
 // ---------------------------------------------------------
 
-async function sendTextMessage(
-  senderPsid,
-  responseText
-) {
+async function sendTextMessage(senderPsid, responseText) {
   try {
     const res = await fetch(
       `https://graph.facebook.com/v18.0/me/messages?access_token=${process.env.META_ACCESS_TOKEN}`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           recipient: { id: senderPsid },
           message: { text: responseText }
@@ -1177,232 +1023,106 @@ async function sendTextMessage(
     const data = await res.json();
 
     if (data.error) {
-      console.error(
-        'Meta Send Error:',
-        data.error
-      );
+      console.error('Meta Send Error:', data.error);
     } else {
-      console.log(
-        `✅ Response successfully sent to user (${senderPsid})`
-      );
+      console.log(`✅ Response successfully sent to user (${senderPsid})`);
     }
   } catch (error) {
-    console.error(
-      'Failed to send text message:',
-      error
-    );
+    console.error('Failed to send text message:', error);
   }
 }
 
 // ---------------------------------------------------------
-// META WEBHOOK VERIFICATION
+// META WEBHOOK ENDPOINTS
 // ---------------------------------------------------------
 
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
-  const token =
-    req.query['hub.verify_token'];
-  const challenge =
-    req.query['hub.challenge'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
 
   if (mode && token) {
-    if (
-      mode === 'subscribe' &&
-      token === process.env.VERIFY_TOKEN
-    ) {
+    if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
       console.log('WEBHOOK_VERIFIED');
-      return res
-        .status(200)
-        .send(challenge);
+      res.status(200).send(challenge);
+    } else {
+      res.sendStatus(403);
     }
-
-    return res.sendStatus(403);
+  } else {
+    res.sendStatus(400);
   }
-
-  return res.sendStatus(400);
 });
-
-// ---------------------------------------------------------
-// META WEBHOOK
-// ---------------------------------------------------------
 
 app.post('/webhook', async (req, res) => {
   const body = req.body;
 
-  if (
-    body.object !== 'page' &&
-    body.object !== 'instagram'
-  ) {
-    return res.sendStatus(404);
-  }
+  if (body.object === 'page' || body.object === 'instagram') {
+    res.status(200).send('EVENT_RECEIVED');
 
-  // Respond to Meta immediately.
-  res.status(200).send('EVENT_RECEIVED');
-
-  for (const entry of body.entry || []) {
-    let messagingEvents =
-      entry.messaging || [];
-
-    if (!entry.messaging && entry.changes) {
-      messagingEvents =
-        entry.changes
-          .map(change => change.value)
-          .filter(
-            value =>
-              value && value.message
-          );
-    }
-
-    for (const webhookEvent of messagingEvents) {
-      const messageId =
-        webhookEvent.message
-          ? webhookEvent.message.mid
-          : null;
-
-      if (
-        messageId &&
-        processedMessageIds.has(messageId)
-      ) {
-        console.log(
-          `⚠️ Skipping duplicate message ID: ${messageId}`
-        );
-        continue;
+    for (const entry of body.entry) {
+      let messagingEvents = entry.messaging || [];
+      if (!entry.messaging && entry.changes) {
+        messagingEvents = entry.changes.map(change => change.value).filter(val => val && val.message);
       }
 
-      if (messageId) {
-        processedMessageIds.add(
-          messageId
-        );
+      for (const webhookEvent of messagingEvents) {
+        const messageId = webhookEvent.message ? webhookEvent.message.mid : null;
 
-        if (
-          processedMessageIds.size >
-          1000
-        ) {
-          const firstItem =
-            processedMessageIds
-              .values()
-              .next().value;
-
-          processedMessageIds.delete(
-            firstItem
-          );
+        if (messageId && processedMessageIds.has(messageId)) {
+          console.log(`⚠️ Skipping duplicate message ID: ${messageId}`);
+          continue;
         }
-      }
 
-      const senderPsid =
-        webhookEvent.sender
-          ? webhookEvent.sender.id
-          : null;
-
-      if (
-        !senderPsid ||
-        (webhookEvent.message &&
-          webhookEvent.message.is_echo)
-      ) {
-        continue;
-      }
-
-      // -----------------------------
-      // TEXT MESSAGE
-      // -----------------------------
-
-      if (
-        webhookEvent.message &&
-        webhookEvent.message.text
-      ) {
-        const userText =
-          webhookEvent.message.text;
-
-        console.log(
-          `💬 Message received from ${senderPsid}: "${userText}"`
-        );
-
-        try {
-          const aiReply =
-            await processCustomerMessage(
-              userText,
-              senderPsid,
-              'himalayan_wear'
-            );
-
-          console.log(
-            `🤖 AI Reply: "${aiReply}"`
-          );
-
-          await sendTextMessage(
-            senderPsid,
-            aiReply
-          );
-        } catch (err) {
-          console.error(
-            '❌ Error processing text message:',
-            err
-          );
+        if (messageId) {
+          processedMessageIds.add(messageId);
+          if (processedMessageIds.size > 1000) {
+            const firstItem = processedMessageIds.values().next().value;
+            processedMessageIds.delete(firstItem);
+          }
         }
-      }
 
-      // -----------------------------
-      // IMAGE MESSAGE
-      // -----------------------------
+        const senderPsid = webhookEvent.sender ? webhookEvent.sender.id : null;
+        if (!senderPsid || (webhookEvent.message && webhookEvent.message.is_echo)) continue;
 
-      else if (
-        webhookEvent.message &&
-        webhookEvent.message.attachments
-      ) {
-        const imageAttachment =
-          webhookEvent.message.attachments.find(
-            att => att.type === 'image'
-          );
-
-        if (
-          imageAttachment &&
-          imageAttachment.payload &&
-          imageAttachment.payload.url
-        ) {
-          const imageUrl =
-            imageAttachment.payload.url;
-
-          console.log(
-            `🖼️ Image received from ${senderPsid}: ${imageUrl}`
-          );
+        if (webhookEvent.message && webhookEvent.message.text) {
+          const userText = webhookEvent.message.text;
+          console.log(`💬 Message received from ${senderPsid}: "${userText}"`);
 
           try {
-            const aiReply =
-              await processCustomerImage(
-                imageUrl,
-                senderPsid,
-                'himalayan_wear'
-              );
-
-            console.log(
-              `🤖 AI Vision Reply: "${aiReply}"`
-            );
-
-            await sendTextMessage(
-              senderPsid,
-              aiReply
-            );
+            const aiReply = await processCustomerMessage(userText, senderPsid, 'himalayan_wear');
+            console.log(`🤖 AI Reply: "${aiReply}"`);
+            await sendTextMessage(senderPsid, aiReply);
           } catch (err) {
-            console.error(
-              '❌ Error processing image:',
-              err
-            );
+            console.error('❌ Error processing text message:', err);
+          }
+        } else if (webhookEvent.message && webhookEvent.message.attachments) {
+          const imageAttachment = webhookEvent.message.attachments.find(att => att.type === 'image');
+
+          if (imageAttachment && imageAttachment.payload && imageAttachment.payload.url) {
+            const imageUrl = imageAttachment.payload.url;
+            console.log(`🖼️ Image received from ${senderPsid}: ${imageUrl}`);
+
+            try {
+              const aiReply = await processCustomerImage(imageUrl, senderPsid, 'himalayan_wear');
+              console.log(`🤖 AI Vision Reply: "${aiReply}"`);
+              await sendTextMessage(senderPsid, aiReply);
+            } catch (err) {
+              console.error('❌ Error processing image:', err);
+            }
           }
         }
       }
     }
+  } else {
+    res.sendStatus(404);
   }
 });
 
 // ---------------------------------------------------------
-// SERVER
+// SERVER INITIALIZATION
 // ---------------------------------------------------------
 
-const PORT =
-  process.env.PORT || 3000;
-
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(
-    `🚀 Server running on http://localhost:${PORT}`
-  );
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
