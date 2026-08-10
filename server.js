@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const Groq = require('groq-sdk');
 const { createClient } = require('@supabase/supabase-js');
+const axios = require('axios'); // Required for WhatsApp Graph API calls
 
 const app = express();
 app.use(express.json());
@@ -316,6 +317,9 @@ CRITICAL TOOL CALLING INSTRUCTION:
   return aiReply;
 }
 
+/**
+ * Messenger Outbound Helper
+ */
 async function sendTextMessage(senderPsid, responseText) {
   try {
     const res = await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${process.env.META_ACCESS_TOKEN}`, {
@@ -331,12 +335,60 @@ async function sendTextMessage(senderPsid, responseText) {
     if (data.error) {
       console.error('Meta Send Error:', data.error);
     } else {
-      console.log(`✅ Response successfully sent to user (${senderPsid})`);
+      console.log(`✅ Messenger Response sent to user (${senderPsid})`);
     }
   } catch (error) {
-    console.error('Failed to send text message:', error);
+    console.error('Failed to send Messenger text message:', error);
   }
 }
+
+/**
+ * WhatsApp Outbound Helper
+ */
+async function sendWhatsAppMessage(to, text) {
+  try {
+    const url = `https://graph.facebook.com/v18.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+    await axios.post(
+      url,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: to,
+        type: 'text',
+        text: { body: text }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    console.log(`✅ WhatsApp Response sent to user (${to})`);
+  } catch (error) {
+    console.error('Error sending WhatsApp message:', error.response?.data || error.message);
+  }
+}
+
+/**
+ * Helper to retrieve image URL from WhatsApp Media ID
+ */
+async function getWhatsAppMediaUrl(mediaId) {
+  try {
+    const token = process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
+    const mediaRes = await axios.get(`https://graph.facebook.com/v18.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    return mediaRes.data.url;
+  } catch (error) {
+    console.error('Failed to get WhatsApp media URL:', error.message);
+    return null;
+  }
+}
+
+/* ==========================================================================
+   1. META MESSENGER WEBHOOK ROUTES
+   ========================================================================== */
 
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
@@ -420,6 +472,75 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(404);
   }
 });
+
+/* ==========================================================================
+   2. WHATSAPP CLOUD API WEBHOOK ROUTES
+   ========================================================================== */
+
+app.get('/webhook/whatsapp', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN || process.env.VERIFY_TOKEN;
+
+  if (mode === 'subscribe' && token === expectedToken) {
+    console.log('[WhatsApp Webhook] Verified successfully.');
+    return res.status(200).send(challenge);
+  }
+
+  console.error('[WhatsApp Webhook Verification Failed]: Mismatched token');
+  return res.sendStatus(403);
+});
+
+app.post('/webhook/whatsapp', async (req, res) => {
+  res.sendStatus(200); // Always respond 200 immediately to Meta
+
+  try {
+    const entry = req.body?.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+    const message = value?.messages?.[0];
+
+    if (!message) return; // Skip read receipts and status updates
+
+    const customerPhone = message.from;
+    const messageId = message.id;
+
+    if (messageId && processedMessageIds.has(messageId)) {
+      console.log(`⚠️ Skipping duplicate WhatsApp message ID: ${messageId}`);
+      return;
+    }
+    if (messageId) processedMessageIds.add(messageId);
+
+    if (message.type === 'text') {
+      const userText = message.text.body;
+      console.log(`💬 WhatsApp from ${customerPhone}: "${userText}"`);
+
+      const aiReply = await processCustomerMessage(userText, customerPhone, 'himalayan_wear');
+      console.log(`🤖 AI Reply (WhatsApp): "${aiReply}"`);
+      await sendWhatsAppMessage(customerPhone, aiReply);
+
+    } else if (message.type === 'image') {
+      const imageUrl = await getWhatsAppMediaUrl(message.image.id);
+      console.log(`🖼️ WhatsApp Image from ${customerPhone}: ${imageUrl}`);
+
+      if (imageUrl) {
+        const aiReply = await processCustomerImage(imageUrl, customerPhone, 'himalayan_wear');
+        console.log(`🤖 AI Vision Reply (WhatsApp): "${aiReply}"`);
+        await sendWhatsAppMessage(customerPhone, aiReply);
+      } else {
+        await sendWhatsAppMessage(customerPhone, 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.');
+      }
+    }
+  } catch (error) {
+    console.error('❌ WhatsApp Message Processing Error:', error);
+  }
+});
+
+/* ==========================================================================
+   SERVER INITIALIZATION
+   ========================================================================== */
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
