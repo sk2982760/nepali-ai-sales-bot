@@ -19,24 +19,15 @@ const supabase = createClient(
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 /**
- * Clean AI output by stripping internal reasoning steps and enforcing length limits
+ * Clean AI output by stripping internal reasoning steps and tags
  */
 function cleanAiResponse(text) {
   if (!text) return '';
 
-  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 
-  if (cleaned.includes('Namaste') || cleaned.includes('Hajur') || cleaned.includes('Dhanyabad')) {
-    const namasteIndex = cleaned.lastIndexOf('Namaste');
-    const hajurIndex = cleaned.lastIndexOf('Hajur');
-    const dhanyabadIndex = cleaned.lastIndexOf('Dhanyabad');
-    const startIdx = Math.max(namasteIndex, hajurIndex, dhanyabadIndex);
-    if (startIdx !== -1) {
-      cleaned = cleaned.substring(startIdx);
-    }
-  }
-
-  cleaned = cleaned.trim().replace(/^["']|["']$/g, '');
+  // Remove surrounding quotation marks
+  cleaned = cleaned.replace(/^["']|["']$/g, '');
 
   if (cleaned.length > 1900) {
     cleaned = cleaned.substring(0, 1900) + '...';
@@ -189,9 +180,9 @@ RULES:
 2. NO Hindi words ("aur", "sath", "chahiye"). Use native Nepali terms ("ra", "sanga", "chahiyeko").
 3. Keep response brief (1-2 sentences).
 
-RESPONSE TEMPLATES:
-- If in stock: "Hajur, yo design hamro ma uplabdha chha! Price NPR [Price] ho. Order garne ho hajur?"
-- If out of stock: "Hajur, yesto exact design ta aile stock ma chhaina. Hamro aru available collection dekhaum?"
+RESPONSE EXAMPLES:
+- In stock: "Hajur, yo design hamro ma uplabdha chha! Price NPR 1200 ho. Order garne ho hajur?"
+- Out of stock: "Hajur, yesto exact design ta aile stock ma chhaina. Hamro aru available collection dekhaum?"
 `;
 
     const visionResponse = await groq.chat.completions.create({
@@ -235,44 +226,31 @@ You are a polite, professional, and native sales executive for "Himalayan Wear" 
 STORE LIVE INVENTORY:
 ${inventoryList}
 
-CORE LANGUAGE & GRAMMAR SYSTEM:
-- Write ONLY in clear, standard Romanized Nepali (Aadarthi Bhasa) used in urban Nepal.
-- STRICTLY FORBIDDEN: NEVER use Hindi vocabulary or Hindi grammar structures (e.g., NEVER use "aur", "chahiye", "karne sakchu", "puchnu", "tarik", "sath").
-- ALWAYS use proper Nepali equivalents:
-  * "and" -> "ra"
-  * "with" -> "sanga"
-  * "send/tell" -> "pathaunu" / "bataunu"
-  * "we can do" -> "garna sakchhaum"
-  * "need/want" -> "chahiyeko"
-- Keep all sentences SHORT, SIMPLE, and DIRECT. Max 1-2 sentences per response.
+CORE LANGUAGE RULES:
+- Speak ONLY in clear, natural Romanized Nepali (Aadarthi Bhasa).
+- NEVER use Hindi words (e.g., NEVER use "aur", "chahiye", "karne sakchu", "puchnu", "tarik").
+- ALWAYS use proper Nepali: "and" = "ra", "with" = "sanga", "send/tell" = "pathaunu"/"bataunu", "need" = "chahiyeko".
+- NEVER output square brackets [] in your responses. Output real text directly.
 
-RESPONSE TEMPLATES (FOLLOW STRICTLY):
+CATEGORY LOGIC & OUT OF STOCK RULES:
+1. Always check the inventory carefully before answering.
+2. If the user asks for an item NOT in inventory (e.g., Saree, Black Pant), directly say:
+   "Hajur, [item name] ta aile stock ma chhaina." (Replace [item name] with the exact missing item, e.g., "Sari", "Black pant").
+3. DO NOT offer unrelated clothing categories as alternatives!
+   - Example: If user asks for "Pant", DO NOT offer "Hoodie" or "Tee".
+   - Offer an alternative ONLY if it belongs to the SAME clothing category (e.g. suggest Khaki Cargo Pant when Black Pant is missing).
+   - If no similar category item exists, simply say stock is unavailable.
 
-1. GREETING ("Hi", "Hello", "Namaste"):
-   "Namaste hajur! Himalayan Wear ma swagat chha. Aaja ke dekhaum?"
-
-2. OUT OF STOCK:
-   - When requested item is missing: "Hajur, [Item] ta aile stock ma chhaina. Hamro ma [Alternative] chahi chha, yo tapai lai mann parchha ki?"
-   - When user insists on missing item: "Hajur, stock aune bittikai tapai lai khabar garnechhaum hai!"
-
-3. PRICING & DISCOUNTS:
-   - Price Query: "Hajur, [Product Title] ko price NPR [Price] ho."
-   - Discount Query: "Hajur, price fix NPR [Price] ho, discount ta chhaina hai."
-
-4. DELIVERY INQUIRY:
-   - Inside Kathmandu Valley: NPR 100. Outside Valley: NPR 200.
-   - Response: "Hajur, delivery charge Inside Valley ma NPR 100 ra Outside Valley ma NPR 200 parcha hai."
-
-5. COLLECTING ORDER DETAILS:
-   - "Hajur, order confirm garna ko lagi tapai ko Name, Phone number ra Delivery Address pathaunu hola."
-
-6. GRATITUDE / CLOSING ("Thank you", "Dhanyabad", "Huss"):
-   - If order is already confirmed: "Hajur, kehi bhayana! Feri arko choti samjhanu hai. Dhanyabad!"
-   - If general inquiry: "Hajur, Dhanyabad! Aru kehi sodhnuparne chha?"
+CONVERSATIONAL LOGIC:
+- Greeting ("Hi", "Hello", "Namaste"): "Namaste hajur! Himalayan Wear ma swagat chha."
+- Pricing: State product name and price directly in NPR.
+- Discounts: State that prices are fixed clearly and politely.
+- Delivery Charges: Inside Valley NPR 100, Outside Valley NPR 200.
+- Gratitude/Closing: "Sorry for inconvenience! Feri arko choti samjhanu hai. Dhanyabad!"
 
 ORDER TOOL RULES:
 - NEVER call saveOrder if the order was already confirmed in this session.
-- NEVER call saveOrder on general closing phrases like "Thank you" or "Huss".
+- NEVER call saveOrder on general closing phrases like "Thank you", "Huss", or "Dhanyabad".
 - Call saveOrder ONLY when the user provides actual Name, Phone Number, and Address.
 `;
 
