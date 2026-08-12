@@ -56,16 +56,20 @@ async function getStoreByPlatformId({ whatsappPhoneId, facebookPageId, instagram
   let query = supabase.from('stores').select('*');
 
   if (whatsappPhoneId) {
-    query = query.eq('whatsapp_phone_number_id', whatsappPhoneId);
+    query = query.eq('whatsapp_phone_number_id', String(whatsappPhoneId).trim());
   } else if (facebookPageId) {
-    query = query.eq('facebook_page_id', facebookPageId);
+    query = query.eq('facebook_page_id', String(facebookPageId).trim());
   } else if (instagramAccountId) {
-    query = query.eq('instagram_account_id', instagramAccountId);
+    query = query.eq('instagram_account_id', String(instagramAccountId).trim());
   } else {
     return null;
   }
 
   const { data, error } = await query.maybeSingle();
+
+  if (error) {
+    console.error('❌ Supabase Store Lookup Error:', error.message);
+  }
 
   if (error || !data) {
     console.error(`⚠️ Store not found for incoming ID (WA: ${whatsappPhoneId}, FB: ${facebookPageId}, IG: ${instagramAccountId})`);
