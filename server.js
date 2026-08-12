@@ -439,6 +439,63 @@ async function getWhatsAppMediaUrl(mediaId, accessToken) {
 }
 
 /* ==========================================================================
+   STORE ONBOARDING API ROUTES
+   ========================================================================== */
+
+/**
+ * POST /api/onboard-store
+ * Registers a new store with flexible multi-channel credentials.
+ * Handles any combination of WhatsApp, Facebook, or Instagram.
+ */
+app.post('/api/onboard-store', async (req, res) => {
+  try {
+    const {
+      store_name,
+      whatsapp_phone_number_id,
+      whatsapp_access_token,
+      facebook_page_id,
+      facebook_page_access_token,
+      instagram_account_id
+    } = req.body;
+
+    if (!store_name) {
+      return res.status(400).json({ success: false, error: 'Store name is required.' });
+    }
+
+    // Clean / Trim input parameters if present
+    const payload = {
+      store_name: store_name.trim(),
+      whatsapp_phone_number_id: whatsapp_phone_number_id ? String(whatsapp_phone_number_id).trim() : null,
+      whatsapp_access_token: whatsapp_access_token ? String(whatsapp_access_token).trim() : null,
+      facebook_page_id: facebook_page_id ? String(facebook_page_id).trim() : null,
+      facebook_page_access_token: facebook_page_access_token ? String(facebook_page_access_token).trim() : null,
+      instagram_account_id: instagram_account_id ? String(instagram_account_id).trim() : null
+    };
+
+    const { data, error } = await supabase
+      .from('stores')
+      .insert([payload])
+      .select();
+
+    if (error) {
+      console.error('❌ Onboarding Error:', error.message);
+      return res.status(400).json({ success: false, error: error.message });
+    }
+
+    console.log(`✅ Store "${store_name}" onboarded successfully!`);
+    return res.status(201).json({
+      success: true,
+      message: 'Store onboarded successfully',
+      store: data[0]
+    });
+
+  } catch (err) {
+    console.error('❌ Server Error during store onboarding:', err);
+    return res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+/* ==========================================================================
    1. META MESSENGER & INSTAGRAM WEBHOOK ROUTES
    ========================================================================== */
 
