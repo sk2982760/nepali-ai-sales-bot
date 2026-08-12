@@ -164,7 +164,13 @@ async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_w
   const inventoryList = await getStoreInventory(storeId);
 
   try {
-    const imageResponse = await fetch(imageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const token = process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
+    const imageResponse = await fetch(imageUrl, { 
+      headers: { 
+        'User-Agent': 'Mozilla/5.0',
+        'Authorization': `Bearer ${token}` 
+      } 
+    });
     const arrayBuffer = await imageResponse.arrayBuffer();
     const base64Data = Buffer.from(arrayBuffer).toString('base64');
     const mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
@@ -322,7 +328,7 @@ CRITICAL TOOL CALLING INSTRUCTION:
  */
 async function sendTextMessage(senderPsid, responseText) {
   try {
-    const res = await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${process.env.META_ACCESS_TOKEN}`, {
+    const res = await fetch(`https://graph.facebook.com/v20.0/me/messages?access_token=${process.env.META_ACCESS_TOKEN}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -347,7 +353,7 @@ async function sendTextMessage(senderPsid, responseText) {
  */
 async function sendWhatsAppMessage(to, text) {
   try {
-    const url = `https://graph.facebook.com/v18.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+    const url = `https://graph.facebook.com/v20.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
     await axios.post(
       url,
       {
@@ -376,7 +382,7 @@ async function sendWhatsAppMessage(to, text) {
 async function getWhatsAppMediaUrl(mediaId) {
   try {
     const token = process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
-    const mediaRes = await axios.get(`https://graph.facebook.com/v18.0/${mediaId}`, {
+    const mediaRes = await axios.get(`https://graph.facebook.com/v20.0/${mediaId}`, {
       headers: { Authorization: `Bearer ${token}` }
     });
     return mediaRes.data.url;
