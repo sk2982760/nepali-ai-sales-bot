@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const Groq = require('groq-sdk');
 const { createClient } = require('@supabase/supabase-js');
-const axios = require('axios'); // Required for WhatsApp Graph API calls
+const axios = require('axios');
 
 const app = express();
 app.use(express.json());
@@ -10,12 +10,9 @@ app.use(express.json());
 // Deduplication cache to prevent Meta double-webhook executions
 const processedMessageIds = new Set();
 
-/**
- * Helper to keep deduplication set within memory limits
- */
 function trackProcessedMessageId(messageId) {
   if (!messageId) return false;
-  if (processedMessageIds.has(messageId)) return true; // Already processed
+  if (processedMessageIds.has(messageId)) return true;
 
   processedMessageIds.add(messageId);
   if (processedMessageIds.size > 1000) {
@@ -39,23 +36,49 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
  */
 function cleanAiResponse(text) {
   if (!text) return '';
-
   let cleaned = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-
-  // Remove surrounding quotation marks
   cleaned = cleaned.replace(/^["']|["']$/g, '');
 
   if (cleaned.length > 1900) {
     cleaned = cleaned.substring(0, 1900) + '...';
   }
-
   return cleaned;
 }
 
+/* ==========================================================================
+   MULTI-TENANT DYNAMIC STORE & DATABASE LOOKUPS
+   ========================================================================== */
+
 /**
- * Fetch available products for a specific store from Supabase database
+ * Resolve store settings & tokens from Supabase based on incoming platform ID
  */
-async function getStoreInventory(storeId = 'himalayan_wear') {
+async function getStoreByPlatformId({ whatsappPhoneId, facebookPageId, instagramAccountId }) {
+  let query = supabase.from('stores').select('*');
+
+  if (whatsappPhoneId) {
+    query = query.eq('whatsapp_phone_number_id', whatsappPhoneId);
+  } else if (facebookPageId) {
+    query = query.eq('facebook_page_id', facebookPageId);
+  } else if (instagramAccountId) {
+    query = query.eq('instagram_account_id', instagramAccountId);
+  } else {
+    return null;
+  }
+
+  const { data, error } = await query.maybeSingle();
+
+  if (error || !data) {
+    console.error(`⚠️ Store not found for incoming ID (WA: ${whatsappPhoneId}, FB: ${facebookPageId}, IG: ${instagramAccountId})`);
+    return null;
+  }
+
+  return data;
+}
+
+/**
+ * Fetch store-specific active inventory from Supabase
+ */
+async function getStoreInventory(storeId) {
   const { data, error } = await supabase
     .from('products')
     .select('id, title, price_npr, stock_quantity')
@@ -63,7 +86,7 @@ async function getStoreInventory(storeId = 'himalayan_wear') {
     .gt('stock_quantity', 0);
 
   if (error) {
-    console.error('Error fetching products from Supabase:', error);
+    console.error(`Error fetching products for store ${storeId}:`, error);
     return 'No product data available.';
   }
 
@@ -77,26 +100,27 @@ async function getStoreInventory(storeId = 'himalayan_wear') {
 }
 
 /**
- * Save chat message to Supabase to maintain multi-turn context
+ * Save chat message to Supabase scoped to store_id and sender
  */
-async function saveChatMessage(senderPsid, role, content) {
+async function saveChatMessage(storeId, senderPsid, role, content) {
   try {
     const { error } = await supabase.from('chat_messages').insert([
-      { sender_psid: senderPsid, role, content }
+      { store_id: storeId, sender_psid: senderPsid, role, content }
     ]);
-    if (error) console.error('Error saving chat message to Supabase:', error);
+    if (error) console.error('Error saving chat message:', error);
   } catch (err) {
-    console.error('Error saving chat message:', err);
+    console.error('Error in saveChatMessage:', err);
   }
 }
 
 /**
- * Fetch past chat messages for conversation history
+ * Fetch past chat messages for a specific store and customer
  */
-async function getChatHistory(senderPsid, limit = 8) {
+async function getChatHistory(storeId, senderPsid, limit = 8) {
   const { data, error } = await supabase
     .from('chat_messages')
     .select('role, content')
+    .eq('store_id', storeId)
     .eq('sender_psid', senderPsid)
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -106,9 +130,9 @@ async function getChatHistory(senderPsid, limit = 8) {
 }
 
 /**
- * Save customer order into Supabase and automatically deduct stock
+ * Save customer order into Supabase for a specific store and deduct stock
  */
-async function saveOrder({ customer_name, phone_number, delivery_location, product_title, quantity, total_price_npr, delivery_charge_npr, store_id = 'himalayan_wear' }) {
+async function saveOrder({ store_id, customer_name, phone_number, delivery_location, product_title, quantity, total_price_npr, delivery_charge_npr }) {
   const orderQuantity = quantity || 1;
 
   if (!customer_name || customer_name.toLowerCase().includes('unknown') || !phone_number || phone_number.toLowerCase().includes('unknown')) {
@@ -132,16 +156,17 @@ async function saveOrder({ customer_name, phone_number, delivery_location, produ
     .select();
 
   if (orderError) {
-    console.error('Error saving order to Supabase:', orderError);
+    console.error(`Error saving order for store ${store_id}:`, orderError);
     return { success: false, error: orderError.message };
   }
 
+  // Deduct inventory stock for this store
   const { data: prodData } = await supabase
     .from('products')
     .select('id, stock_quantity')
     .eq('store_id', store_id)
     .ilike('title', `%${product_title}%`)
-    .single();
+    .maybeSingle();
 
   if (prodData) {
     const newStock = Math.max(0, prodData.stock_quantity - orderQuantity);
@@ -175,11 +200,15 @@ const orderTool = {
   }
 };
 
-async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_wear') {
-  const inventoryList = await getStoreInventory(storeId);
+/* ==========================================================================
+   AI CORE ENGINE (VISION & TEXT)
+   ========================================================================== */
+
+async function processCustomerImage(imageUrl, senderPsid, store) {
+  const inventoryList = await getStoreInventory(store.id);
+  const token = store.whatsapp_access_token || store.facebook_page_access_token || process.env.META_ACCESS_TOKEN;
 
   try {
-    const token = process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
     const imageResponse = await fetch(imageUrl, { 
       headers: { 
         'User-Agent': 'Mozilla/5.0',
@@ -192,7 +221,7 @@ async function processCustomerImage(imageUrl, senderPsid, storeId = 'himalayan_w
     const dataUrl = `data:${mimeType};base64,${base64Data}`;
 
     const visionPrompt = `
-You are a polite customer assistant for "Himalayan Wear" in Kathmandu speaking natural Romanized Nepali.
+You are a polite customer assistant for "${store.store_name}" in Kathmandu speaking natural Romanized Nepali.
 
 Current Available Inventory:
 ${inventoryList}
@@ -224,8 +253,8 @@ EXAMPLES:
     const rawReply = visionResponse.choices[0]?.message?.content || '';
     const aiReply = cleanAiResponse(rawReply) || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
 
-    await saveChatMessage(senderPsid, 'user', '[Sent an image]');
-    await saveChatMessage(senderPsid, 'assistant', aiReply);
+    await saveChatMessage(store.id, senderPsid, 'user', '[Sent an image]');
+    await saveChatMessage(store.id, senderPsid, 'assistant', aiReply);
 
     return aiReply;
   } catch (err) {
@@ -234,13 +263,12 @@ EXAMPLES:
   }
 }
 
-async function processCustomerMessage(userMessage, senderPsid, storeId = 'himalayan_wear') {
-  const inventoryList = await getStoreInventory(storeId);
-  const chatHistory = await getChatHistory(senderPsid);
+async function processCustomerMessage(userMessage, senderPsid, store) {
+  const inventoryList = await getStoreInventory(store.id);
+  const chatHistory = await getChatHistory(store.id, senderPsid);
 
   const lowerMsg = userMessage.toLowerCase().trim();
 
-  // Guardrail 1: Detect explicit order decline or delay keywords
   const orderDeclinedOrDelayed = lowerMsg.includes('paxi') || 
                                  lowerMsg.includes('pachi') || 
                                  lowerMsg.includes('ahile gardina') || 
@@ -249,18 +277,15 @@ async function processCustomerMessage(userMessage, senderPsid, storeId = 'himala
                                  lowerMsg.includes('pardaina') || 
                                  lowerMsg.includes('nai');
 
-  // Guardrail 2: Detect simple acknowledgement phrases
   const isSimpleAck = lowerMsg === 'huss' || lowerMsg === 'okay' || lowerMsg === 'ok' || lowerMsg === 'dhanyabad' || lowerMsg === 'thank you';
 
-  // Check if an order was already confirmed in recent history
   const lastAssistantMsg = [...chatHistory].reverse().find(m => m.role === 'assistant');
   const isOrderAlreadyConfirmed = lastAssistantMsg && lastAssistantMsg.content.includes('confirm bhayo');
 
-  // Disable tool calling if user declined, sent a simple ack, or order is already confirmed
   const shouldDisableTools = isOrderAlreadyConfirmed || orderDeclinedOrDelayed || isSimpleAck;
 
   const systemPrompt = `
-You are a polite, natural, and helpful sales assistant for "Himalayan Wear" in Kathmandu, Nepal.
+You are a polite, natural, and helpful sales assistant for "${store.store_name}" in Kathmandu, Nepal.
 
 STORE LIVE INVENTORY:
 ${inventoryList}
@@ -270,7 +295,7 @@ STRICT GRAMMAR & LANGUAGE DIRECTIVES:
 - Maintain short, concise sentences (1-2 sentences maximum).
 - FORBIDDEN WORDS/PHRASES: NEVER use "pasand", "pasand aaucha", "koi", "aur", "sath", "chahiye", "karne sakchu", "puchnu".
 - MANDATORY PHRASING:
-  * Greeting: "Namaste hajur! Himalayan Wear ma swagat chha."
+  * Greeting: "Namaste hajur! ${store.store_name} ma swagat chha."
   * "Do you like this?": "Yo tapai lai mann parchha ki?"
   * "No problem": "Hajur, kehi xaina."
   * "Whenever you decide": "Hajur le decide garepachhi khabar garnuhola hai."
@@ -278,13 +303,8 @@ STRICT GRAMMAR & LANGUAGE DIRECTIVES:
 UPSELLING & REJECTION RULES:
 1. If an item is NOT in stock, state it clearly: "Hajur, [item] ta aile stock ma chhaina."
 2. You may suggest a similar item ONCE.
-3. CRITICAL: If the customer insists on an out-of-stock item or color (e.g., "Haina red ma nai chahiyeko thyo") or declines an alternative ("Haina pardaina"), DO NOT PITCH ANY MORE PRODUCTS!
-   - Reply gracefully: "Hajur, bujhe. Red color ma stock aune bittikai tapai lai khabar garnechhaum hai! Dhanyabad."
-
-REQUEST TO SPEAK TO OWNER / MANAGER:
-- If asked for owner/manager, reply:
-  "Hajur, maile tapai ko message owner lai forward gardiyeko chhu. Unale chhitai tapai lai contact garnuhunechha hai!"
-- NEVER invent or output fake phone numbers.
+3. CRITICAL: If the customer insists on an out-of-stock item/color or declines an alternative, DO NOT PITCH ANY MORE PRODUCTS!
+   - Reply gracefully: "Hajur, bujhe. Stock aune bittikai tapai lai khabar garnechhaum hai! Dhanyabad."
 
 CRITICAL TOOL CALLING INSTRUCTION:
 - DO NOT call saveOrder when the user says "Huss", "Paxi garxu", "Decide garera", "Haina pardaina", "Thank you", or asks a general question.
@@ -307,7 +327,7 @@ CRITICAL TOOL CALLING INSTRUCTION:
   });
 
   const responseMessage = response.choices[0]?.message;
-  await saveChatMessage(senderPsid, 'user', userMessage);
+  await saveChatMessage(store.id, senderPsid, 'user', userMessage);
 
   if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0 && !shouldDisableTools) {
     const toolCall = responseMessage.tool_calls[0];
@@ -316,7 +336,7 @@ CRITICAL TOOL CALLING INSTRUCTION:
         ? JSON.parse(toolCall.function.arguments)
         : toolCall.function.arguments;
 
-      orderArgs.store_id = storeId;
+      orderArgs.store_id = store.id;
       const orderResult = await saveOrder(orderArgs);
 
       let orderReply = '';
@@ -326,24 +346,26 @@ CRITICAL TOOL CALLING INSTRUCTION:
         orderReply = 'Hajur, order confirm garda kehi samasya aayo. Kripaya full name ra phone number punah check garera pathaunu hola.';
       }
 
-      await saveChatMessage(senderPsid, 'assistant', orderReply);
+      await saveChatMessage(store.id, senderPsid, orderReply ? 'assistant' : 'system', orderReply);
       return orderReply;
     }
   }
 
   const rawReply = responseMessage.content || '';
   const aiReply = cleanAiResponse(rawReply) || 'Hajur, kehi technical samasya aayo. Kripaya feri prayas garnuhos.';
-  await saveChatMessage(senderPsid, 'assistant', aiReply);
+  await saveChatMessage(store.id, senderPsid, 'assistant', aiReply);
 
   return aiReply;
 }
 
-/**
- * Messenger Outbound Helper
- */
-async function sendTextMessage(senderPsid, responseText) {
+/* ==========================================================================
+   DYNAMIC OUTBOUND MESSAGING HELPERS
+   ========================================================================== */
+
+async function sendTextMessage(senderPsid, responseText, accessToken) {
   try {
-    const res = await fetch(`https://graph.facebook.com/v20.0/me/messages?access_token=${process.env.META_ACCESS_TOKEN}`, {
+    const token = accessToken || process.env.META_ACCESS_TOKEN;
+    const res = await fetch(`https://graph.facebook.com/v20.0/me/messages?access_token=${token}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -356,19 +378,18 @@ async function sendTextMessage(senderPsid, responseText) {
     if (data.error) {
       console.error('Meta Send Error:', data.error);
     } else {
-      console.log(`✅ Messenger Response sent to user (${senderPsid})`);
+      console.log(`✅ Messenger/IG Response sent to user (${senderPsid})`);
     }
   } catch (error) {
-    console.error('Failed to send Messenger text message:', error);
+    console.error('Failed to send text message:', error);
   }
 }
 
-/**
- * WhatsApp Outbound Helper
- */
-async function sendWhatsAppMessage(to, text) {
+async function sendWhatsAppMessage(to, text, phoneId, accessToken) {
   try {
-    const url = `https://graph.facebook.com/v20.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+    const token = accessToken || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
+    const url = `https://graph.facebook.com/v20.0/${phoneId}/messages`;
+    
     await axios.post(
       url,
       {
@@ -380,7 +401,7 @@ async function sendWhatsAppMessage(to, text) {
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN}`,
+          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json'
         }
       }
@@ -391,12 +412,9 @@ async function sendWhatsAppMessage(to, text) {
   }
 }
 
-/**
- * Helper to retrieve image URL from WhatsApp Media ID
- */
-async function getWhatsAppMediaUrl(mediaId) {
+async function getWhatsAppMediaUrl(mediaId, accessToken) {
   try {
-    const token = process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
+    const token = accessToken || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
     const mediaRes = await axios.get(`https://graph.facebook.com/v20.0/${mediaId}`, {
       headers: { Authorization: `Bearer ${token}` }
     });
@@ -408,7 +426,7 @@ async function getWhatsAppMediaUrl(mediaId) {
 }
 
 /* ==========================================================================
-   1. META MESSENGER WEBHOOK ROUTES
+   1. META MESSENGER & INSTAGRAM WEBHOOK ROUTES
    ========================================================================== */
 
 app.get('/webhook', (req, res) => {
@@ -435,6 +453,7 @@ app.post('/webhook', async (req, res) => {
     res.status(200).send('EVENT_RECEIVED');
 
     for (const entry of body.entry || []) {
+      const pageOrIgId = entry.id; // Recipient Page ID or Instagram Account ID
       let messagingEvents = entry.messaging || [];
       if (!entry.messaging && entry.changes) {
         messagingEvents = entry.changes.map(change => change.value).filter(val => val && val.message);
@@ -444,21 +463,34 @@ app.post('/webhook', async (req, res) => {
         const messageId = webhookEvent.message ? webhookEvent.message.mid : null;
 
         if (trackProcessedMessageId(messageId)) {
-          console.log(`⚠️ Skipping duplicate Messenger message ID: ${messageId}`);
+          console.log(`⚠️ Skipping duplicate Messenger/IG message ID: ${messageId}`);
           continue;
         }
 
         const senderPsid = webhookEvent.sender ? webhookEvent.sender.id : null;
         if (!senderPsid || (webhookEvent.message && webhookEvent.message.is_echo)) continue;
 
+        // Dynamic store resolution
+        const store = await getStoreByPlatformId({
+          facebookPageId: pageOrIgId,
+          instagramAccountId: pageOrIgId
+        });
+
+        if (!store) {
+          console.error(`Store not registered for Facebook/Instagram ID: ${pageOrIgId}`);
+          continue;
+        }
+
+        const token = store.facebook_page_access_token || process.env.META_ACCESS_TOKEN;
+
         if (webhookEvent.message && webhookEvent.message.text) {
           const userText = webhookEvent.message.text;
-          console.log(`💬 Message received from ${senderPsid}: "${userText}"`);
+          console.log(`💬 Message received from ${senderPsid} [Store: ${store.store_name}]: "${userText}"`);
 
           try {
-            const aiReply = await processCustomerMessage(userText, senderPsid, 'himalayan_wear');
+            const aiReply = await processCustomerMessage(userText, senderPsid, store);
             console.log(`🤖 AI Reply: "${aiReply}"`);
-            await sendTextMessage(senderPsid, aiReply);
+            await sendTextMessage(senderPsid, aiReply, token);
           } catch (err) {
             console.error('❌ Error processing text message:', err);
           }
@@ -468,12 +500,12 @@ app.post('/webhook', async (req, res) => {
 
           if (imageAttachment && imageAttachment.payload && imageAttachment.payload.url) {
             const imageUrl = imageAttachment.payload.url;
-            console.log(`🖼️ Image received from ${senderPsid}: ${imageUrl}`);
+            console.log(`🖼️ Image received from ${senderPsid} [Store: ${store.store_name}]: ${imageUrl}`);
 
             try {
-              const aiReply = await processCustomerImage(imageUrl, senderPsid, 'himalayan_wear');
+              const aiReply = await processCustomerImage(imageUrl, senderPsid, store);
               console.log(`🤖 AI Vision Reply: "${aiReply}"`);
-              await sendTextMessage(senderPsid, aiReply);
+              await sendTextMessage(senderPsid, aiReply, token);
             } catch (err) {
               console.error('❌ Error processing image:', err);
             }
@@ -507,11 +539,7 @@ app.get('/webhook/whatsapp', (req, res) => {
 });
 
 app.post('/webhook/whatsapp', async (req, res) => {
-  // Always send HTTP 200 immediately to prevent Meta webhook timeout/retries
   res.status(200).send('EVENT_RECEIVED');
-
-  // Print raw incoming payload to Render logs for easy debugging
-  console.log('📌 Raw WhatsApp Webhook Received:', JSON.stringify(req.body, null, 2));
 
   try {
     const entry = req.body?.entry?.[0];
@@ -519,15 +547,9 @@ app.post('/webhook/whatsapp', async (req, res) => {
     const value = changes?.value;
     const message = value?.messages?.[0];
 
-    if (!message) {
-      if (value?.statuses) {
-        console.log(`ℹ️ WhatsApp status update received (Status: ${value.statuses[0]?.status})`);
-      } else {
-        console.log('ℹ️ Webhook received, but no user message found in payload.');
-      }
-      return;
-    }
+    if (!message) return;
 
+    const recipientPhoneNumberId = value?.metadata?.phone_number_id;
     const customerPhone = message.from;
     const messageId = message.id;
 
@@ -536,24 +558,34 @@ app.post('/webhook/whatsapp', async (req, res) => {
       return;
     }
 
+    // Dynamic Store Resolution by WhatsApp Phone Number ID
+    const store = await getStoreByPlatformId({ whatsappPhoneId: recipientPhoneNumberId });
+
+    if (!store) {
+      console.error(`Store not registered for WhatsApp Phone Number ID: ${recipientPhoneNumberId}`);
+      return;
+    }
+
+    const waAccessToken = store.whatsapp_access_token || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
+
     if (message.type === 'text') {
       const userText = message.text.body;
-      console.log(`💬 WhatsApp from ${customerPhone}: "${userText}"`);
+      console.log(`💬 WhatsApp from ${customerPhone} [Store: ${store.store_name}]: "${userText}"`);
 
-      const aiReply = await processCustomerMessage(userText, customerPhone, 'himalayan_wear');
+      const aiReply = await processCustomerMessage(userText, customerPhone, store);
       console.log(`🤖 AI Reply (WhatsApp): "${aiReply}"`);
-      await sendWhatsAppMessage(customerPhone, aiReply);
+      await sendWhatsAppMessage(customerPhone, aiReply, recipientPhoneNumberId, waAccessToken);
 
     } else if (message.type === 'image') {
-      const imageUrl = await getWhatsAppMediaUrl(message.image.id);
-      console.log(`🖼️ WhatsApp Image from ${customerPhone}: ${imageUrl}`);
+      const imageUrl = await getWhatsAppMediaUrl(message.image.id, waAccessToken);
+      console.log(`🖼️ WhatsApp Image from ${customerPhone} [Store: ${store.store_name}]: ${imageUrl}`);
 
       if (imageUrl) {
-        const aiReply = await processCustomerImage(imageUrl, customerPhone, 'himalayan_wear');
+        const aiReply = await processCustomerImage(imageUrl, customerPhone, store);
         console.log(`🤖 AI Vision Reply (WhatsApp): "${aiReply}"`);
-        await sendWhatsAppMessage(customerPhone, aiReply);
+        await sendWhatsAppMessage(customerPhone, aiReply, recipientPhoneNumberId, waAccessToken);
       } else {
-        await sendWhatsAppMessage(customerPhone, 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.');
+        await sendWhatsAppMessage(customerPhone, 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.', recipientPhoneNumberId, waAccessToken);
       }
     }
   } catch (error) {
@@ -567,5 +599,5 @@ app.post('/webhook/whatsapp', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🚀 Multi-Tenant Server running on port ${PORT}`);
 });
