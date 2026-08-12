@@ -10,6 +10,21 @@ app.use(express.json());
 // Deduplication cache to prevent Meta double-webhook executions
 const processedMessageIds = new Set();
 
+/**
+ * Helper to keep deduplication set within memory limits
+ */
+function trackProcessedMessageId(messageId) {
+  if (!messageId) return false;
+  if (processedMessageIds.has(messageId)) return true; // Already processed
+
+  processedMessageIds.add(messageId);
+  if (processedMessageIds.size > 1000) {
+    const firstItem = processedMessageIds.values().next().value;
+    processedMessageIds.delete(firstItem);
+  }
+  return false;
+}
+
 // Initialize Supabase Client
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -419,7 +434,7 @@ app.post('/webhook', async (req, res) => {
   if (body.object === 'page' || body.object === 'instagram') {
     res.status(200).send('EVENT_RECEIVED');
 
-    for (const entry of body.entry) {
+    for (const entry of body.entry || []) {
       let messagingEvents = entry.messaging || [];
       if (!entry.messaging && entry.changes) {
         messagingEvents = entry.changes.map(change => change.value).filter(val => val && val.message);
@@ -428,17 +443,9 @@ app.post('/webhook', async (req, res) => {
       for (const webhookEvent of messagingEvents) {
         const messageId = webhookEvent.message ? webhookEvent.message.mid : null;
 
-        if (messageId && processedMessageIds.has(messageId)) {
-          console.log(`⚠️ Skipping duplicate message ID: ${messageId}`);
+        if (trackProcessedMessageId(messageId)) {
+          console.log(`⚠️ Skipping duplicate Messenger message ID: ${messageId}`);
           continue;
-        }
-
-        if (messageId) {
-          processedMessageIds.add(messageId);
-          if (processedMessageIds.size > 1000) {
-            const firstItem = processedMessageIds.values().next().value;
-            processedMessageIds.delete(firstItem);
-          }
         }
 
         const senderPsid = webhookEvent.sender ? webhookEvent.sender.id : null;
@@ -500,7 +507,11 @@ app.get('/webhook/whatsapp', (req, res) => {
 });
 
 app.post('/webhook/whatsapp', async (req, res) => {
-  res.sendStatus(200); // Always respond 200 immediately to Meta
+  // Always send HTTP 200 immediately to prevent Meta webhook timeout/retries
+  res.status(200).send('EVENT_RECEIVED');
+
+  // Print raw incoming payload to Render logs for easy debugging
+  console.log('📌 Raw WhatsApp Webhook Received:', JSON.stringify(req.body, null, 2));
 
   try {
     const entry = req.body?.entry?.[0];
@@ -508,16 +519,22 @@ app.post('/webhook/whatsapp', async (req, res) => {
     const value = changes?.value;
     const message = value?.messages?.[0];
 
-    if (!message) return; // Skip read receipts and status updates
+    if (!message) {
+      if (value?.statuses) {
+        console.log(`ℹ️ WhatsApp status update received (Status: ${value.statuses[0]?.status})`);
+      } else {
+        console.log('ℹ️ Webhook received, but no user message found in payload.');
+      }
+      return;
+    }
 
     const customerPhone = message.from;
     const messageId = message.id;
 
-    if (messageId && processedMessageIds.has(messageId)) {
+    if (trackProcessedMessageId(messageId)) {
       console.log(`⚠️ Skipping duplicate WhatsApp message ID: ${messageId}`);
       return;
     }
-    if (messageId) processedMessageIds.add(messageId);
 
     if (message.type === 'text') {
       const userText = message.text.body;
