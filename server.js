@@ -210,7 +210,8 @@ const orderTool = {
 
 async function processCustomerImage(imageUrl, senderPsid, store) {
   const inventoryList = await getStoreInventory(store.id);
-  const token = store.whatsapp_access_token || store.facebook_page_access_token || process.env.META_ACCESS_TOKEN;
+  const rawToken = store.whatsapp_access_token || store.facebook_page_access_token || process.env.META_ACCESS_TOKEN || '';
+  const token = rawToken.trim();
 
   try {
     const imageResponse = await fetch(imageUrl, { 
@@ -368,7 +369,9 @@ CRITICAL TOOL CALLING INSTRUCTION:
 
 async function sendTextMessage(senderPsid, responseText, accessToken) {
   try {
-    const token = accessToken || process.env.META_ACCESS_TOKEN;
+    const rawToken = accessToken || process.env.META_ACCESS_TOKEN || '';
+    const token = rawToken.trim();
+
     const res = await fetch(`https://graph.facebook.com/v20.0/me/messages?access_token=${token}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -391,7 +394,11 @@ async function sendTextMessage(senderPsid, responseText, accessToken) {
 
 async function sendWhatsAppMessage(to, text, phoneId, accessToken) {
   try {
-    const token = accessToken || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
+    const rawToken = accessToken || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN || '';
+    const token = rawToken.trim();
+
+    console.log(`🔑 Sending WA message using token prefix: ${token.substring(0, 12)}... (Length: ${token.length})`);
+
     const url = `https://graph.facebook.com/v20.0/${phoneId}/messages`;
     
     await axios.post(
@@ -412,13 +419,15 @@ async function sendWhatsAppMessage(to, text, phoneId, accessToken) {
     );
     console.log(`✅ WhatsApp Response sent to user (${to})`);
   } catch (error) {
-    console.error('Error sending WhatsApp message:', error.response?.data || error.message);
+    console.error('Error sending WhatsApp message:', JSON.stringify(error.response?.data || error.message, null, 2));
   }
 }
 
 async function getWhatsAppMediaUrl(mediaId, accessToken) {
   try {
-    const token = accessToken || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
+    const rawToken = accessToken || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN || '';
+    const token = rawToken.trim();
+
     const mediaRes = await axios.get(`https://graph.facebook.com/v20.0/${mediaId}`, {
       headers: { Authorization: `Bearer ${token}` }
     });
@@ -601,7 +610,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
    SERVER INITIALIZATION
    ========================================================================== */
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`🚀 Multi-Tenant Server running on port ${PORT}`);
 });
