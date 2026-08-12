@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Onboard Your Store | AI Sales Bot</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f6f8; margin: 0; padding: 40px 20px; }
+    .container { max-width: 500px; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); margin: 0 auto; }
+    h2 { margin-top: 0; color: #333; }
+    label { font-weight: bold; display: block; margin-top: 15px; font-size: 14px; }
+    input[type="text"] { width: 100%; padding: 10px; margin-top: 5px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+    .channel-box { background: #f9f9f9; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px solid #e0e0e0; }
+    .channel-title { font-weight: bold; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+    button { width: 100%; background: #0084ff; color: #fff; padding: 12px; border: none; border-radius: 6px; margin-top: 25px; font-size: 16px; font-weight: bold; cursor: pointer; }
+    button:hover { background: #006bce; }
+    #status { margin-top: 15px; font-weight: bold; text-align: center; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h2>Onboard New Store</h2>
+  <form id="onboardForm">
+    <label for="store_name">Store Name *</label>
+    <input type="text" id="store_name" placeholder="e.g. Luffy Sales Business" required>
+
+    <!-- WhatsApp Channel -->
+    <div class="channel-box">
+      <div class="channel-title">📲 WhatsApp Cloud API (Optional)</div>
+      <label>Phone Number ID</label>
+      <input type="text" id="whatsapp_phone_number_id" placeholder="1272567072611850">
+      <label>Access Token</label>
+      <input type="text" id="whatsapp_access_token" placeholder="EAAdoD1O5s...">
+    </div>
+
+    <!-- Facebook Messenger Channel -->
+    <div class="channel-box">
+      <div class="channel-title">💬 Facebook Messenger (Optional)</div>
+      <label>Facebook Page ID</label>
+      <input type="text" id="facebook_page_id" placeholder="109283746501928">
+      <label>Page Access Token</label>
+      <input type="text" id="facebook_page_access_token" placeholder="EAAGm0PX...">
+    </div>
+
+    <!-- Instagram Channel -->
+    <div class="channel-box">
+      <div class="channel-title">📸 Instagram DMs (Optional)</div>
+      <label>Instagram Account ID</label>
+      <input type="text" id="instagram_account_id" placeholder="178414000123456">
+    </div>
+
+    <button type="submit">Register Store</button>
+  </form>
+  <div id="status"></div>
+</div>
+
+<script>
+  document.getElementById('onboardForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const statusDiv = document.getElementById('status');
+    statusDiv.style.color = '#333';
+    statusDiv.innerText = 'Submitting...';
+
+    const payload = {
+      store_name: document.getElementById('store_name').value,
+      whatsapp_phone_number_id: document.getElementById('whatsapp_phone_number_id').value || null,
+      whatsapp_access_token: document.getElementById('whatsapp_access_token').value || null,
+      facebook_page_id: document.getElementById('facebook_page_id').value || null,
+      facebook_page_access_token: document.getElementById('facebook_page_access_token').value || null,
+      instagram_account_id: document.getElementById('instagram_account_id').value || null
+    };
+
+    try {
+      const res = await fetch('https://nepali-ai-sales-bot.onrender.com/api/onboard-store', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await res.json();
+      if (data.success) {
+        statusDiv.style.color = 'green';
+        statusDiv.innerText = '✅ Store successfully registered!';
+        document.getElementById('onboardForm').reset();
+      } else {
+        statusDiv.style.color = 'red';
+        statusDiv.innerText = '❌ Error: ' + data.error;
+      }
+    } catch (err) {
+      statusDiv.style.color = 'red';
+      statusDiv.innerText = '❌ Failed to connect to server.';
+    }
+  });
+</script>
+
+</body>
+</html>

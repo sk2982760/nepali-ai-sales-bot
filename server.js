@@ -1,11 +1,20 @@
 require('dotenv').config();
 const express = require('express');
+const path = require('path');
 const Groq = require('groq-sdk');
 const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 
 const app = express();
 app.use(express.json());
+
+// Serve static files (e.g. index.html) from the root directory
+app.use(express.static(__dirname));
+
+// Serve index.html on the root URL
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 // Deduplication cache to prevent Meta double-webhook executions
 const processedMessageIds = new Set();
