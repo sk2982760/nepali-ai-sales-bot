@@ -104,7 +104,7 @@
 
   // Automated One-Click Multi-Channel Onboarding
   document.getElementById('btnConnectMeta').addEventListener('click', () => {
-    const storeName = document.getElementById('store_name_auto').value;
+    const storeName = document.getElementById('store_name_auto').value.trim();
     const statusDiv = document.getElementById('statusAuto');
 
     if (!storeName) {
@@ -115,16 +115,16 @@
     statusDiv.style.color = '#333';
     statusDiv.innerText = 'Opening Meta OAuth Login...';
 
-    FB.login((response) => {
+    FB.login(function(response) {
       if (response.authResponse) {
         const userAccessToken = response.authResponse.accessToken;
-        statusDiv.innerText = 'Detecting connected channels and configuring store...';
-
+        statusDiv.innerText = 'Connecting store and channels...';
+        
         fetch('/api/connect-all-channels', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            store_name: storeName,
+            store_name: storeName, // FIXED: Matches element ID store_name_auto
             user_access_token: userAccessToken,
             wa_data: window.waSignupData || null
           })
@@ -133,7 +133,7 @@
         .then(data => {
           if (data.success) {
             statusDiv.style.color = 'green';
-            statusDiv.innerText = `✅ Store Connected! Linked Channels: ${data.connectedChannels.join(', ')}`;
+            statusDiv.innerText = `✅ Store connected successfully! Channels: ${data.connectedChannels.join(', ')}`;
             document.getElementById('store_name_auto').value = '';
           } else {
             statusDiv.style.color = 'red';
@@ -142,17 +142,15 @@
         })
         .catch(err => {
           statusDiv.style.color = 'red';
-          statusDiv.innerText = '❌ Server communication error.';
+          statusDiv.innerText = '❌ Connection failed. Check server logs.';
         });
-
       } else {
         statusDiv.style.color = 'red';
-        statusDiv.innerText = 'User cancelled or failed login authorization.';
+        statusDiv.innerText = '❌ Meta Login cancelled or permissions declined.';
       }
     }, {
-      config_id: '2355558175250117',
-      response_type: 'token',
-      override_default_response_type: true
+      scope: 'pages_show_list,pages_read_engagement,pages_manage_metadata,pages_messaging,whatsapp_business_management,business_management',
+      return_scopes: true
     });
   });
 
