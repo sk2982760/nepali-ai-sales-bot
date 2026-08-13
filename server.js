@@ -8,14 +8,12 @@ const axios = require('axios');
 const app = express();
 app.use(express.json());
 
-// Serve static files (e.g. index.html) from the root directory
+// Serve static files (e.g. index.html, dashboard.html) from the root directory
 app.use(express.static(__dirname));
 
-// Serve index.html on the root URL
-// Serve the admin dashboard on /dashboard
+// Route to serve the admin dashboard page
 app.get('/dashboard', (req, res) => {
   res.sendFile(path.join(__dirname, 'dashboard.html'));
-  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // Deduplication cache to prevent Meta double-webhook executions
@@ -383,7 +381,7 @@ CRITICAL TOOL CALLING INSTRUCTION:
         orderReply = 'Hajur, order confirm garda kehi samasya aayo. Kripaya full name ra phone number punah check garera pathaunu hola.';
       }
 
-      await saveChatMessage(store.id, senderPsid, orderReply ? 'assistant' : 'system', orderReply);
+      await saveChatMessage(store.id, senderPsid, 'assistant', orderReply);
       return orderReply;
     }
   }
@@ -833,7 +831,46 @@ app.post('/api/onboard-store', async (req, res) => {
 });
 
 /* ==========================================================================
-   1. META MESSENGER & INSTAGRAM WEBHOOK ROUTES
+   DASHBOARD DATA API ROUTE
+   ========================================================================== */
+
+app.get('/api/dashboard', async (req, res) => {
+  try {
+    const { data: stores, error: storeErr } = await supabase
+      .from('stores')
+      .select('*')
+      .limit(1);
+
+    if (storeErr || !stores || stores.length === 0) {
+      return res.json({ store: null, orders: [], products: [] });
+    }
+
+    const store = stores[0];
+
+    const { data: orders } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('store_id', store.id)
+      .order('id', { ascending: false });
+
+    const { data: products } = await supabase
+      .from('products')
+      .select('*')
+      .eq('store_id', store.id);
+
+    return res.json({
+      store,
+      orders: orders || [],
+      products: products || []
+    });
+  } catch (err) {
+    console.error('Dashboard API Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/* ==========================================================================
+   META MESSENGER & INSTAGRAM WEBHOOK ROUTES
    ========================================================================== */
 
 app.get('/webhook', (req, res) => {
@@ -860,7 +897,7 @@ app.post('/webhook', async (req, res) => {
     res.status(200).send('EVENT_RECEIVED');
 
     for (const entry of body.entry || []) {
-      const pageOrIgId = entry.id; // Recipient Page ID or Instagram Account ID
+      const pageOrIgId = entry.id;
       let messagingEvents = entry.messaging || [];
       if (!entry.messaging && entry.changes) {
         messagingEvents = entry.changes.map(change => change.value).filter(val => val && val.message);
@@ -877,7 +914,6 @@ app.post('/webhook', async (req, res) => {
         const senderPsid = webhookEvent.sender ? webhookEvent.sender.id : null;
         if (!senderPsid || (webhookEvent.message && webhookEvent.message.is_echo)) continue;
 
-        // Dynamic store resolution
         const store = await getStoreByPlatformId({
           facebookPageId: pageOrIgId,
           instagramAccountId: pageOrIgId
@@ -891,31 +927,15 @@ app.post('/webhook', async (req, res) => {
         const token = store.facebook_page_access_token || process.env.META_ACCESS_TOKEN;
 
         if (webhookEvent.message && webhookEvent.message.text) {
-          const userText = webhookEvent.message.text;
-          console.log(`💬 Message received from ${senderPsid} [Store: ${store.store_name}]: "${userText}"`);
-
-          try {
-            const aiReply = await processCustomerMessage(userText, senderPsid, store);
-            console.log(`🤖 AI Reply: "${aiReply}"`);
-            await sendTextMessage(senderPsid, aiReply, token);
-          } catch (err) {
-            console.error('❌ Error processing text message:', err);
-          }
-        } 
-        else if (webhookEvent.message && webhookEvent.message.attachments) {
+          const userMessage = webhookEvent.message.text;
+          const reply = await processCustomerMessage(userMessage, senderPsid, store);
+          await sendTextMessage(senderPsid, reply, token);
+        } else if (webhookEvent.message && webhookEvent.message.attachments) {
           const imageAttachment = webhookEvent.message.attachments.find(att => att.type === 'image');
-
           if (imageAttachment && imageAttachment.payload && imageAttachment.payload.url) {
             const imageUrl = imageAttachment.payload.url;
-            console.log(`🖼️ Image received from ${senderPsid} [Store: ${store.store_name}]: ${imageUrl}`);
-
-            try {
-              const aiReply = await processCustomerImage(imageUrl, senderPsid, store);
-              console.log(`🤖 AI Vision Reply: "${aiReply}"`);
-              await sendTextMessage(senderPsid, aiReply, token);
-            } catch (err) {
-              console.error('❌ Error processing image:', err);
-            }
+            const reply = await processCustomerImage(imageUrl, senderPsid, store);
+            await sendTextMessage(senderPsid, reply, token);
           }
         }
       }
@@ -926,7 +946,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 /* ==========================================================================
-   2. WHATSAPP CLOUD API WEBHOOK ROUTES
+   WHATSAPP CLOUD API WEBHOOK ROUTES
    ========================================================================== */
 
 app.get('/webhook/whatsapp', (req, res) => {
@@ -934,30 +954,31 @@ app.get('/webhook/whatsapp', (req, res) => {
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN || process.env.VERIFY_TOKEN;
-
-  if (mode === 'subscribe' && token === expectedToken) {
-    console.log('[WhatsApp Webhook] Verified successfully.');
-    return res.status(200).send(challenge);
+  if (mode && token) {
+    if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
+      console.log('WHATSAPP_WEBHOOK_VERIFIED');
+      res.status(200).send(challenge);
+    } else {
+      res.sendStatus(403);
+    }
+  } else {
+    res.sendStatus(400);
   }
-
-  console.error('[WhatsApp Webhook Verification Failed]: Mismatched token');
-  return res.sendStatus(403);
 });
 
 app.post('/webhook/whatsapp', async (req, res) => {
+  const body = req.body;
   res.status(200).send('EVENT_RECEIVED');
 
   try {
-    const entry = req.body?.entry?.[0];
+    const entry = body.entry?.[0];
     const changes = entry?.changes?.[0];
     const value = changes?.value;
-    const message = value?.messages?.[0];
 
-    if (!message) return;
+    if (!value || !value.messages || value.messages.length === 0) return;
 
-    const recipientPhoneNumberId = value?.metadata?.phone_number_id;
-    const customerPhone = message.from;
+    const phoneId = value.metadata?.phone_number_id;
+    const message = value.messages[0];
     const messageId = message.id;
 
     if (trackProcessedMessageId(messageId)) {
@@ -965,38 +986,30 @@ app.post('/webhook/whatsapp', async (req, res) => {
       return;
     }
 
-    // Dynamic Store Resolution by WhatsApp Phone Number ID
-    const store = await getStoreByPlatformId({ whatsappPhoneId: recipientPhoneNumberId });
+    const senderPhone = message.from;
 
+    const store = await getStoreByPlatformId({ whatsappPhoneId: phoneId });
     if (!store) {
-      console.error(`Store not registered for WhatsApp Phone Number ID: ${recipientPhoneNumberId}`);
+      console.error(`Store not registered for WhatsApp Phone ID: ${phoneId}`);
       return;
     }
 
-    const waAccessToken = store.whatsapp_access_token || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
+    const waToken = store.whatsapp_access_token || process.env.WHATSAPP_ACCESS_TOKEN || process.env.META_ACCESS_TOKEN;
 
     if (message.type === 'text') {
-      const userText = message.text.body;
-      console.log(`💬 WhatsApp from ${customerPhone} [Store: ${store.store_name}]: "${userText}"`);
-
-      const aiReply = await processCustomerMessage(userText, customerPhone, store);
-      console.log(`🤖 AI Reply (WhatsApp): "${aiReply}"`);
-      await sendWhatsAppMessage(customerPhone, aiReply, recipientPhoneNumberId, waAccessToken);
-
+      const userMessage = message.text.body;
+      const reply = await processCustomerMessage(userMessage, senderPhone, store);
+      await sendWhatsAppMessage(senderPhone, reply, phoneId, waToken);
     } else if (message.type === 'image') {
-      const imageUrl = await getWhatsAppMediaUrl(message.image.id, waAccessToken);
-      console.log(`🖼️ WhatsApp Image from ${customerPhone} [Store: ${store.store_name}]: ${imageUrl}`);
-
+      const mediaId = message.image.id;
+      const imageUrl = await getWhatsAppMediaUrl(mediaId, waToken);
       if (imageUrl) {
-        const aiReply = await processCustomerImage(imageUrl, customerPhone, store);
-        console.log(`🤖 AI Vision Reply (WhatsApp): "${aiReply}"`);
-        await sendWhatsAppMessage(customerPhone, aiReply, recipientPhoneNumberId, waAccessToken);
-      } else {
-        await sendWhatsAppMessage(customerPhone, 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.', recipientPhoneNumberId, waAccessToken);
+        const reply = await processCustomerImage(imageUrl, senderPhone, store);
+        await sendWhatsAppMessage(senderPhone, reply, phoneId, waToken);
       }
     }
-  } catch (error) {
-    console.error('❌ WhatsApp Message Processing Error:', error);
+  } catch (err) {
+    console.error('Error handling WhatsApp webhook:', err);
   }
 });
 
@@ -1004,7 +1017,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
    SERVER INITIALIZATION
    ========================================================================== */
 
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Multi-Tenant Server running on port ${PORT}`);
+  console.log(`🚀 Server listening on port ${PORT}`);
 });
