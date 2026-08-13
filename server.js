@@ -519,16 +519,29 @@ app.post('/api/connect-all-channels', async (req, res) => {
       connectedChannels.push('WhatsApp Cloud API');
     } else {
       try {
-        const waRes = await axios.get('https://graph.facebook.com/v20.0/me', {
-          params: {
-            fields: 'whatsapp_business_accounts',
-            access_token: user_access_token
-          }
+        // Step A: Fetch Meta Business Accounts owned by or linked to the user
+        const bizRes = await axios.get('https://graph.facebook.com/v20.0/me/businesses', {
+          params: { access_token: user_access_token }
         });
 
-        const waAccounts = waRes.data?.whatsapp_business_accounts?.data || [];
-        if (waAccounts.length > 0) {
-          const waAccId = waAccounts[0].id;
+        const businesses = bizRes.data?.data || [];
+        let waAccId = null;
+
+        for (const biz of businesses) {
+          // Step B: Fetch WhatsApp Business Accounts under each business
+          const waAccRes = await axios.get(`https://graph.facebook.com/v20.0/${biz.id}/whatsapp_business_accounts`, {
+            params: { access_token: user_access_token }
+          });
+          
+          const waAccounts = waAccRes.data?.data || [];
+          if (waAccounts.length > 0) {
+            waAccId = waAccounts[0].id;
+            break;
+          }
+        }
+
+        // Step C: Fetch Phone Numbers for the discovered WhatsApp Business Account
+        if (waAccId) {
           const phoneRes = await axios.get(`https://graph.facebook.com/v20.0/${waAccId}/phone_numbers`, {
             params: { access_token: user_access_token }
           });
