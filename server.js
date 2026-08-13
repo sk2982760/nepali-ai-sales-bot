@@ -60,32 +60,53 @@ function cleanAiResponse(text) {
 
 /**
  * Resolve store settings & tokens from Supabase based on incoming platform ID
+ * Searches `store_channels` first, then falls back to `stores` table columns.
  */
 async function getStoreByPlatformId({ whatsappPhoneId, facebookPageId, instagramAccountId }) {
-  let query = supabase.from('stores').select('*');
+  const targetId = String(whatsappPhoneId || facebookPageId || instagramAccountId || '').trim();
+  if (!targetId) return null;
 
-  if (whatsappPhoneId) {
-    query = query.eq('whatsapp_phone_number_id', String(whatsappPhoneId).trim());
-  } else if (facebookPageId) {
-    query = query.eq('facebook_page_id', String(facebookPageId).trim());
-  } else if (instagramAccountId) {
-    query = query.eq('instagram_account_id', String(instagramAccountId).trim());
-  } else {
+  try {
+    // 1. Check relational store_channels table
+    const { data: channel, error: channelErr } = await supabase
+      .from('store_channels')
+      .select('*, stores(*)')
+      .eq('channel_id', targetId)
+      .maybeSingle();
+
+    if (!channelErr && channel) {
+      const storeData = Array.isArray(channel.stores) ? channel.stores[0] : channel.stores;
+      if (storeData) {
+        return {
+          ...storeData,
+          facebook_page_access_token: channel.access_token || storeData.facebook_page_access_token,
+          whatsapp_access_token: channel.access_token || storeData.whatsapp_access_token,
+          active_channel_id: channel.channel_id
+        };
+      }
+    }
+
+    // 2. Fallback check on stores table directly
+    let query = supabase.from('stores').select('*');
+    if (whatsappPhoneId) {
+      query = query.eq('whatsapp_phone_number_id', String(whatsappPhoneId).trim());
+    } else if (facebookPageId) {
+      query = query.eq('facebook_page_id', String(facebookPageId).trim());
+    } else if (instagramAccountId) {
+      query = query.eq('instagram_account_id', String(instagramAccountId).trim());
+    }
+
+    const { data: directStore, error: directErr } = await query.maybeSingle();
+    if (!directErr && directStore) {
+      return directStore;
+    }
+
+    console.error(`⚠️ Store not found for incoming ID: ${targetId}`);
+    return null;
+  } catch (err) {
+    console.error('❌ Error during store lookup:', err.message);
     return null;
   }
-
-  const { data, error } = await query.maybeSingle();
-
-  if (error) {
-    console.error('❌ Supabase Store Lookup Error:', error.message);
-  }
-
-  if (error || !data) {
-    console.error(`⚠️ Store not found for incoming ID (WA: ${whatsappPhoneId}, FB: ${facebookPageId}, IG: ${instagramAccountId})`);
-    return null;
-  }
-
-  return data;
 }
 
 /**
@@ -452,6 +473,33 @@ async function getWhatsAppMediaUrl(mediaId, accessToken) {
    ========================================================================== */
 
 /**
+ * Helper to insert multi-channel entries into store_channels table
+ */
+async function saveStoreChannels(storeId, channels) {
+  const channelRows = [];
+
+  for (const ch of channels) {
+    if (ch.channel_id && ch.access_token) {
+      channelRows.push({
+        store_id: storeId,
+        channel_type: ch.channel_type,
+        channel_id: String(ch.channel_id).trim(),
+        access_token: String(ch.access_token).trim()
+      });
+    }
+  }
+
+  if (channelRows.length > 0) {
+    const { error } = await supabase.from('store_channels').insert(channelRows);
+    if (error) {
+      console.error('❌ Error inserting into store_channels:', error.message);
+    } else {
+      console.log(`✅ Inserted ${channelRows.length} channel(s) into store_channels for store ${storeId}`);
+    }
+  }
+}
+
+/**
  * POST /api/connect-all-channels
  * Automated One-Click Multi-Channel Onboarding endpoint using Meta User Access Token
  */
@@ -464,6 +512,8 @@ app.post('/api/connect-all-channels', async (req, res) => {
     }
 
     const connectedChannels = [];
+    const channelList = [];
+
     let facebookPageId = null;
     let facebookPageAccessToken = null;
     let instagramAccountId = null;
@@ -486,9 +536,21 @@ app.post('/api/connect-all-channels', async (req, res) => {
         facebookPageAccessToken = primaryPage.access_token;
         connectedChannels.push('Facebook Messenger');
 
+        channelList.push({
+          channel_type: 'messenger',
+          channel_id: facebookPageId,
+          access_token: facebookPageAccessToken
+        });
+
         if (primaryPage.instagram_business_account && primaryPage.instagram_business_account.id) {
           instagramAccountId = primaryPage.instagram_business_account.id;
           connectedChannels.push('Instagram DMs');
+
+          channelList.push({
+            channel_type: 'instagram',
+            channel_id: instagramAccountId,
+            access_token: facebookPageAccessToken
+          });
         }
 
         // Subscribe Page to App Webhooks
@@ -517,9 +579,14 @@ app.post('/api/connect-all-channels', async (req, res) => {
       whatsappPhoneNumberId = String(wa_data.phone_number_id).trim();
       whatsappAccessToken = user_access_token;
       connectedChannels.push('WhatsApp Cloud API');
+
+      channelList.push({
+        channel_type: 'whatsapp',
+        channel_id: whatsappPhoneNumberId,
+        access_token: whatsappAccessToken
+      });
     } else {
       try {
-        // Step A: Fetch Meta Business Accounts owned by or linked to the user
         const bizRes = await axios.get('https://graph.facebook.com/v20.0/me/businesses', {
           params: { access_token: user_access_token }
         });
@@ -528,7 +595,6 @@ app.post('/api/connect-all-channels', async (req, res) => {
         let waAccId = null;
 
         for (const biz of businesses) {
-          // Step B: Fetch WhatsApp Business Accounts under each business
           const waAccRes = await axios.get(`https://graph.facebook.com/v20.0/${biz.id}/whatsapp_business_accounts`, {
             params: { access_token: user_access_token }
           });
@@ -540,7 +606,6 @@ app.post('/api/connect-all-channels', async (req, res) => {
           }
         }
 
-        // Step C: Fetch Phone Numbers for the discovered WhatsApp Business Account
         if (waAccId) {
           const phoneRes = await axios.get(`https://graph.facebook.com/v20.0/${waAccId}/phone_numbers`, {
             params: { access_token: user_access_token }
@@ -550,6 +615,12 @@ app.post('/api/connect-all-channels', async (req, res) => {
             whatsappPhoneNumberId = phoneNumbers[0].id;
             whatsappAccessToken = user_access_token;
             connectedChannels.push('WhatsApp Cloud API');
+
+            channelList.push({
+              channel_type: 'whatsapp',
+              channel_id: whatsappPhoneNumberId,
+              access_token: whatsappAccessToken
+            });
           }
         }
       } catch (waErr) {
@@ -564,9 +635,11 @@ app.post('/api/connect-all-channels', async (req, res) => {
       });
     }
 
-    // Save/Insert into Supabase 'stores'
-    const payload = {
+    // Save Store into Supabase 'stores'
+    const slug = store_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const storePayload = {
       store_name: store_name.trim(),
+      slug: slug,
       whatsapp_phone_number_id: whatsappPhoneNumberId,
       whatsapp_access_token: whatsappAccessToken,
       facebook_page_id: facebookPageId,
@@ -574,21 +647,26 @@ app.post('/api/connect-all-channels', async (req, res) => {
       instagram_account_id: instagramAccountId
     };
 
-    const { data, error } = await supabase
+    const { data: storeData, error: storeErr } = await supabase
       .from('stores')
-      .insert([payload])
+      .insert([storePayload])
       .select();
 
-    if (error) {
-      console.error('❌ Supabase insert error in automated onboarding:', error.message);
-      return res.status(400).json({ success: false, error: error.message });
+    if (storeErr) {
+      console.error('❌ Supabase insert error in automated onboarding:', storeErr.message);
+      return res.status(400).json({ success: false, error: storeErr.message });
     }
+
+    const createdStore = storeData[0];
+
+    // Save channels into 'store_channels' table
+    await saveStoreChannels(createdStore.id, channelList);
 
     console.log(`✅ Store "${store_name}" automatically connected with channels: ${connectedChannels.join(', ')}`);
     return res.status(201).json({
       success: true,
       connectedChannels,
-      store: data[0]
+      store: createdStore
     });
 
   } catch (err) {
@@ -616,9 +694,12 @@ app.post('/api/onboard-store', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Store name is required.' });
     }
 
-    // Clean / Trim input parameters if present
-    const payload = {
-      store_name: store_name.trim(),
+    const cleanStoreName = store_name.trim();
+    const slug = cleanStoreName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+
+    const storePayload = {
+      store_name: cleanStoreName,
+      slug: slug,
       whatsapp_phone_number_id: whatsapp_phone_number_id ? String(whatsapp_phone_number_id).trim() : null,
       whatsapp_access_token: whatsapp_access_token ? String(whatsapp_access_token).trim() : null,
       facebook_page_id: facebook_page_id ? String(facebook_page_id).trim() : null,
@@ -626,21 +707,37 @@ app.post('/api/onboard-store', async (req, res) => {
       instagram_account_id: instagram_account_id ? String(instagram_account_id).trim() : null
     };
 
-    const { data, error } = await supabase
+    const { data: storeData, error: storeErr } = await supabase
       .from('stores')
-      .insert([payload])
+      .insert([storePayload])
       .select();
 
-    if (error) {
-      console.error('❌ Onboarding Error:', error.message);
-      return res.status(400).json({ success: false, error: error.message });
+    if (storeErr) {
+      console.error('❌ Onboarding Error:', storeErr.message);
+      return res.status(400).json({ success: false, error: storeErr.message });
     }
 
-    console.log(`✅ Store "${store_name}" onboarded successfully!`);
+    const createdStore = storeData[0];
+
+    // Build channel items for store_channels
+    const channelList = [];
+    if (facebook_page_id && facebook_page_access_token) {
+      channelList.push({ channel_type: 'messenger', channel_id: facebook_page_id, access_token: facebook_page_access_token });
+    }
+    if (instagram_account_id && facebook_page_access_token) {
+      channelList.push({ channel_type: 'instagram', channel_id: instagram_account_id, access_token: facebook_page_access_token });
+    }
+    if (whatsapp_phone_number_id && whatsapp_access_token) {
+      channelList.push({ channel_type: 'whatsapp', channel_id: whatsapp_phone_number_id, access_token: whatsapp_access_token });
+    }
+
+    await saveStoreChannels(createdStore.id, channelList);
+
+    console.log(`✅ Store "${cleanStoreName}" onboarded successfully!`);
     return res.status(201).json({
       success: true,
       message: 'Store onboarded successfully',
-      store: data[0]
+      store: createdStore
     });
 
   } catch (err) {
