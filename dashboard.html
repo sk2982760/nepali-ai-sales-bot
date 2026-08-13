@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI Sales Assistant - Store Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen font-sans">
+
+  <!-- Navigation -->
+  <nav class="border-b border-slate-800 bg-slate-950 px-6 py-4 flex justify-between items-center">
+    <div class="flex items-center gap-3">
+      <span class="bg-emerald-500 text-slate-950 font-bold px-3 py-1 rounded-md text-sm">LIVE</span>
+      <h1 class="text-xl font-bold tracking-wide">AI Sales Admin Dashboard</h1>
+    </div>
+    <div class="text-sm text-slate-400" id="store-selector">
+      Active Store ID: <span id="active-store-display" class="font-mono text-emerald-400">Loading...</span>
+    </div>
+  </nav>
+
+  <main class="max-w-7xl mx-auto p-6 space-y-8">
+
+    <!-- KPI Summary Cards -->
+    <section class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div class="bg-slate-800/60 border border-slate-700/60 p-5 rounded-xl">
+        <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Orders</p>
+        <h3 class="text-3xl font-extrabold text-white mt-2" id="kpi-orders">0</h3>
+      </div>
+      <div class="bg-slate-800/60 border border-slate-700/60 p-5 rounded-xl">
+        <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Revenue</p>
+        <h3 class="text-3xl font-extrabold text-emerald-400 mt-2" id="kpi-revenue">NPR 0</h3>
+      </div>
+      <div class="bg-slate-800/60 border border-slate-700/60 p-5 rounded-xl">
+        <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Products</p>
+        <h3 class="text-3xl font-extrabold text-indigo-400 mt-2" id="kpi-products">0</h3>
+      </div>
+    </section>
+
+    <!-- Recent Live Orders Table -->
+    <section class="bg-slate-800/40 border border-slate-700/60 rounded-xl overflow-hidden">
+      <div class="p-5 border-b border-slate-700/60 flex justify-between items-center">
+        <h2 class="text-lg font-bold text-white">Live Customer Orders</h2>
+        <button onclick="loadDashboardData()" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded transition">Refresh Data</button>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm text-slate-300">
+          <thead class="bg-slate-900/60 text-xs uppercase text-slate-400 border-b border-slate-700">
+            <tr>
+              <th class="p-4">ID</th>
+              <th class="p-4">Customer Name</th>
+              <th class="p-4">Phone Number</th>
+              <th class="p-4">Delivery Address</th>
+              <th class="p-4">Product Ordered</th>
+              <th class="p-4">Total Amount</th>
+              <th class="p-4">Order Date</th>
+            </tr>
+          </thead>
+          <tbody id="orders-table-body" class="divide-y divide-slate-700/50">
+            <tr>
+              <td colspan="7" class="p-6 text-center text-slate-500">Loading orders...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Store Inventory Management Table -->
+    <section class="bg-slate-800/40 border border-slate-700/60 rounded-xl overflow-hidden">
+      <div class="p-5 border-b border-slate-700/60 flex justify-between items-center">
+        <h2 class="text-lg font-bold text-white">Product Inventory Catalog</h2>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm text-slate-300">
+          <thead class="bg-slate-900/60 text-xs uppercase text-slate-400 border-b border-slate-700">
+            <tr>
+              <th class="p-4">Product Title</th>
+              <th class="p-4">Price (NPR)</th>
+              <th class="p-4">Stock Quantity</th>
+              <th class="p-4">Status</th>
+            </tr>
+          </thead>
+          <tbody id="products-table-body" class="divide-y divide-slate-700/50">
+            <tr>
+              <td colspan="4" class="p-6 text-center text-slate-500">Loading products...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <script>
+    // Fetch SUPABASE details directly from environment configuration or define directly
+    const SUPABASE_URL = "https://twzakwtgcjidpykixcto.supabase.co"; 
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR3emFrd3RnY2ppZHB5a2l4Y3RvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NTk5Nzc4NCwiZXhwIjoyMTAxNTczNzg0fQ.ty0sJGHSp1G2bUBMQapyFkIjJ7uIhNlR28l1s5i0gjs";
+
+    let supabaseClient = null;
+    let targetStoreId = null;
+
+    async function initDashboard() {
+      // 1. Fetch backend config if needed or initialize directly
+      supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+      // 2. Resolve target store ID (defaults to your active store)
+      const { data: stores } = await supabaseClient.from('stores').select('id, store_name').limit(1);
+      if (stores && stores.length > 0) {
+        targetStoreId = stores[0].id;
+        document.getElementById('active-store-display').textContent = `${stores[0].store_name} (${targetStoreId.substring(0,8)}...)`;
+      }
+
+      await loadDashboardData();
+    }
+
+    async function loadDashboardData() {
+      if (!supabaseClient || !targetStoreId) return;
+
+      // Fetch Orders
+      const { data: orders, error: ordersErr } = await supabaseClient
+        .from('orders')
+        .select('*')
+        .eq('store_id', targetStoreId)
+        .order('id', { ascending: false });
+
+      // Fetch Products
+      const { data: products, error: prodErr } = await supabaseClient
+        .from('products')
+        .select('*')
+        .eq('store_id', targetStoreId);
+
+      // Render Orders
+      const ordersTbody = document.getElementById('orders-table-body');
+      if (orders && orders.length > 0) {
+        ordersTbody.innerHTML = orders.map(o => `
+          <tr class="hover:bg-slate-800/50 transition">
+            <td class="p-4 font-mono text-emerald-400">#${o.id}</td>
+            <td class="p-4 font-semibold text-white">${o.customer_name}</td>
+            <td class="p-4 font-mono">${o.phone_number}</td>
+            <td class="p-4">${o.delivery_location}</td>
+            <td class="p-4">${o.product_title} (x${o.quantity || 1})</td>
+            <td class="p-4 font-bold text-slate-100">NPR ${o.total_price_npr || '1500'}</td>
+            <td class="p-4 text-xs text-slate-400">${new Date(o.created_at).toLocaleString()}</td>
+          </tr>
+        `).join('');
+
+        // Calculate KPI Metrics
+        document.getElementById('kpi-orders').textContent = orders.length;
+        const totalRev = orders.reduce((sum, item) => sum + (Number(item.total_price_npr) || 1500), 0);
+        document.getElementById('kpi-revenue').textContent = `NPR ${totalRev.toLocaleString()}`;
+      } else {
+        ordersTbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-slate-500">No orders found for this store yet.</td></tr>`;
+      }
+
+      // Render Products
+      const productsTbody = document.getElementById('products-table-body');
+      if (products && products.length > 0) {
+        productsTbody.innerHTML = products.map(p => `
+          <tr class="hover:bg-slate-800/50 transition">
+            <td class="p-4 font-semibold text-white">${p.title}</td>
+            <td class="p-4 font-mono text-emerald-400">NPR ${p.price_npr}</td>
+            <td class="p-4 font-bold ${p.stock_quantity > 0 ? 'text-indigo-400' : 'text-rose-400'}">${p.stock_quantity} remaining</td>
+            <td class="p-4">
+              <span class="px-2.5 py-1 text-xs rounded-full font-semibold ${p.stock_quantity > 0 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">
+                ${p.stock_quantity > 0 ? 'In Stock' : 'Out of Stock'}
+              </span>
+            </td>
+          </tr>
+        `).join('');
+
+        document.getElementById('kpi-products').textContent = products.length;
+      } else {
+        productsTbody.innerHTML = `<tr><td colspan="4" class="p-6 text-center text-slate-500">No products found in inventory.</td></tr>`;
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', initDashboard);
+  </script>
+</body>
+</html>

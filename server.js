@@ -12,7 +12,9 @@ app.use(express.json());
 app.use(express.static(__dirname));
 
 // Serve index.html on the root URL
-app.get('/', (req, res) => {
+// Serve the admin dashboard on /dashboard
+app.get('/dashboard', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dashboard.html'));
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
