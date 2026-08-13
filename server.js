@@ -473,28 +473,27 @@ async function getWhatsAppMediaUrl(mediaId, accessToken) {
    ========================================================================== */
 
 /**
- * Helper to insert multi-channel entries into store_channels table
+ * Upsert multi-channel entries into store_channels table without duplicate key errors
  */
 async function saveStoreChannels(storeId, channels) {
-  const channelRows = [];
-
   for (const ch of channels) {
     if (ch.channel_id && ch.access_token) {
-      channelRows.push({
+      const channelRow = {
         store_id: storeId,
         channel_type: ch.channel_type,
         channel_id: String(ch.channel_id).trim(),
         access_token: String(ch.access_token).trim()
-      });
-    }
-  }
+      };
 
-  if (channelRows.length > 0) {
-    const { error } = await supabase.from('store_channels').insert(channelRows);
-    if (error) {
-      console.error('❌ Error inserting into store_channels:', error.message);
-    } else {
-      console.log(`✅ Inserted ${channelRows.length} channel(s) into store_channels for store ${storeId}`);
+      const { error } = await supabase
+        .from('store_channels')
+        .upsert(channelRow, { onConflict: 'channel_id' });
+
+      if (error) {
+        console.error(`❌ Error upserting channel ${ch.channel_id}:`, error.message);
+      } else {
+        console.log(`✅ Channel ${ch.channel_type} (${ch.channel_id}) connected/updated for store ${storeId}`);
+      }
     }
   }
 }
@@ -532,7 +531,7 @@ app.post('/api/connect-all-channels', async (req, res) => {
       const pages = pageRes.data?.data || [];
       if (pages.length > 0) {
         const primaryPage = pages[0];
-        facebookPageId = primaryPage.id;
+        facebookPageId = String(primaryPage.id).trim();
         facebookPageAccessToken = primaryPage.access_token;
         connectedChannels.push('Facebook Messenger');
 
@@ -543,7 +542,7 @@ app.post('/api/connect-all-channels', async (req, res) => {
         });
 
         if (primaryPage.instagram_business_account && primaryPage.instagram_business_account.id) {
-          instagramAccountId = primaryPage.instagram_business_account.id;
+          instagramAccountId = String(primaryPage.instagram_business_account.id).trim();
           connectedChannels.push('Instagram DMs');
 
           channelList.push({
@@ -612,7 +611,7 @@ app.post('/api/connect-all-channels', async (req, res) => {
           });
           const phoneNumbers = phoneRes.data?.data || [];
           if (phoneNumbers.length > 0) {
-            whatsappPhoneNumberId = phoneNumbers[0].id;
+            whatsappPhoneNumberId = String(phoneNumbers[0].id).trim();
             whatsappAccessToken = user_access_token;
             connectedChannels.push('WhatsApp Cloud API');
 
@@ -635,7 +634,21 @@ app.post('/api/connect-all-channels', async (req, res) => {
       });
     }
 
-    // Save Store into Supabase 'stores'
+    // Check if store already exists by any of the incoming channel IDs
+    let existingStore = null;
+    if (facebookPageId) {
+      const { data } = await supabase.from('stores').select('*').eq('facebook_page_id', facebookPageId).maybeSingle();
+      if (data) existingStore = data;
+    }
+    if (!existingStore && whatsappPhoneNumberId) {
+      const { data } = await supabase.from('stores').select('*').eq('whatsapp_phone_number_id', whatsappPhoneNumberId).maybeSingle();
+      if (data) existingStore = data;
+    }
+    if (!existingStore && instagramAccountId) {
+      const { data } = await supabase.from('stores').select('*').eq('instagram_account_id', instagramAccountId).maybeSingle();
+      if (data) existingStore = data;
+    }
+
     const slug = store_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
     const storePayload = {
       store_name: store_name.trim(),
@@ -647,23 +660,40 @@ app.post('/api/connect-all-channels', async (req, res) => {
       instagram_account_id: instagramAccountId
     };
 
-    const { data: storeData, error: storeErr } = await supabase
-      .from('stores')
-      .insert([storePayload])
-      .select();
+    let createdStore;
+    if (existingStore) {
+      // Update existing store to avoid duplicate unique key constraint errors
+      const { data: updatedData, error: updateErr } = await supabase
+        .from('stores')
+        .update(storePayload)
+        .eq('id', existingStore.id)
+        .select();
 
-    if (storeErr) {
-      console.error('❌ Supabase insert error in automated onboarding:', storeErr.message);
-      return res.status(400).json({ success: false, error: storeErr.message });
+      if (updateErr) {
+        console.error('❌ Supabase update error during store onboarding:', updateErr.message);
+        return res.status(400).json({ success: false, error: updateErr.message });
+      }
+      createdStore = updatedData[0];
+      console.log(`🔄 Updated existing store "${createdStore.store_name}" (ID: ${createdStore.id})`);
+    } else {
+      // Insert new store record
+      const { data: insertData, error: insertErr } = await supabase
+        .from('stores')
+        .insert([storePayload])
+        .select();
+
+      if (insertErr) {
+        console.error('❌ Supabase insert error during store onboarding:', insertErr.message);
+        return res.status(400).json({ success: false, error: insertErr.message });
+      }
+      createdStore = insertData[0];
+      console.log(`✅ Created new store "${createdStore.store_name}" (ID: ${createdStore.id})`);
     }
 
-    const createdStore = storeData[0];
-
-    // Save channels into 'store_channels' table
+    // Upsert channels into 'store_channels' table
     await saveStoreChannels(createdStore.id, channelList);
 
-    console.log(`✅ Store "${store_name}" automatically connected with channels: ${connectedChannels.join(', ')}`);
-    return res.status(201).json({
+    return res.status(200).json({
       success: true,
       connectedChannels,
       store: createdStore
@@ -677,7 +707,7 @@ app.post('/api/connect-all-channels', async (req, res) => {
 
 /**
  * POST /api/onboard-store
- * Registers a new store with manual multi-channel credentials.
+ * Registers or updates a store with manual multi-channel credentials.
  */
 app.post('/api/onboard-store', async (req, res) => {
   try {
@@ -697,51 +727,84 @@ app.post('/api/onboard-store', async (req, res) => {
     const cleanStoreName = store_name.trim();
     const slug = cleanStoreName.toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
+    const cleanFbPageId = facebook_page_id ? String(facebook_page_id).trim() : null;
+    const cleanWaPhoneId = whatsapp_phone_number_id ? String(whatsapp_phone_number_id).trim() : null;
+    const cleanIgAccountId = instagram_account_id ? String(instagram_account_id).trim() : null;
+
+    // Check if store already exists
+    let existingStore = null;
+    if (cleanFbPageId) {
+      const { data } = await supabase.from('stores').select('*').eq('facebook_page_id', cleanFbPageId).maybeSingle();
+      if (data) existingStore = data;
+    }
+    if (!existingStore && cleanWaPhoneId) {
+      const { data } = await supabase.from('stores').select('*').eq('whatsapp_phone_number_id', cleanWaPhoneId).maybeSingle();
+      if (data) existingStore = data;
+    }
+    if (!existingStore && cleanIgAccountId) {
+      const { data } = await supabase.from('stores').select('*').eq('instagram_account_id', cleanIgAccountId).maybeSingle();
+      if (data) existingStore = data;
+    }
+
     const storePayload = {
       store_name: cleanStoreName,
       slug: slug,
-      whatsapp_phone_number_id: whatsapp_phone_number_id ? String(whatsapp_phone_number_id).trim() : null,
+      whatsapp_phone_number_id: cleanWaPhoneId,
       whatsapp_access_token: whatsapp_access_token ? String(whatsapp_access_token).trim() : null,
-      facebook_page_id: facebook_page_id ? String(facebook_page_id).trim() : null,
+      facebook_page_id: cleanFbPageId,
       facebook_page_access_token: facebook_page_access_token ? String(facebook_page_access_token).trim() : null,
-      instagram_account_id: instagram_account_id ? String(instagram_account_id).trim() : null
+      instagram_account_id: cleanIgAccountId
     };
 
-    const { data: storeData, error: storeErr } = await supabase
-      .from('stores')
-      .insert([storePayload])
-      .select();
+    let createdStore;
+    if (existingStore) {
+      const { data: updatedData, error: updateErr } = await supabase
+        .from('stores')
+        .update(storePayload)
+        .eq('id', existingStore.id)
+        .select();
 
-    if (storeErr) {
-      console.error('❌ Onboarding Error:', storeErr.message);
-      return res.status(400).json({ success: false, error: storeErr.message });
+      if (updateErr) {
+        console.error('❌ Manual Onboarding Update Error:', updateErr.message);
+        return res.status(400).json({ success: false, error: updateErr.message });
+      }
+      createdStore = updatedData[0];
+    } else {
+      const { data: insertData, error: insertErr } = await supabase
+        .from('stores')
+        .insert([storePayload])
+        .select();
+
+      if (insertErr) {
+        console.error('❌ Manual Onboarding Insert Error:', insertErr.message);
+        return res.status(400).json({ success: false, error: insertErr.message });
+      }
+      createdStore = insertData[0];
     }
-
-    const createdStore = storeData[0];
 
     // Build channel items for store_channels
     const channelList = [];
-    if (facebook_page_id && facebook_page_access_token) {
-      channelList.push({ channel_type: 'messenger', channel_id: facebook_page_id, access_token: facebook_page_access_token });
+    if (cleanFbPageId && facebook_page_access_token) {
+      channelList.push({ channel_type: 'messenger', channel_id: cleanFbPageId, access_token: facebook_page_access_token });
     }
-    if (instagram_account_id && facebook_page_access_token) {
-      channelList.push({ channel_type: 'instagram', channel_id: instagram_account_id, access_token: facebook_page_access_token });
+    if (cleanIgAccountId && facebook_page_access_token) {
+      channelList.push({ channel_type: 'instagram', channel_id: cleanIgAccountId, access_token: facebook_page_access_token });
     }
-    if (whatsapp_phone_number_id && whatsapp_access_token) {
-      channelList.push({ channel_type: 'whatsapp', channel_id: whatsapp_phone_number_id, access_token: whatsapp_access_token });
+    if (cleanWaPhoneId && whatsapp_access_token) {
+      channelList.push({ channel_type: 'whatsapp', channel_id: cleanWaPhoneId, access_token: whatsapp_access_token });
     }
 
     await saveStoreChannels(createdStore.id, channelList);
 
-    console.log(`✅ Store "${cleanStoreName}" onboarded successfully!`);
-    return res.status(201).json({
+    console.log(`✅ Store "${cleanStoreName}" onboarded/updated successfully!`);
+    return res.status(200).json({
       success: true,
       message: 'Store onboarded successfully',
       store: createdStore
     });
 
   } catch (err) {
-    console.error('❌ Server Error during store onboarding:', err);
+    console.error('❌ Server Error during manual store onboarding:', err);
     return res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
