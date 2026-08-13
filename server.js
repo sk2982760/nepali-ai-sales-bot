@@ -452,9 +452,120 @@ async function getWhatsAppMediaUrl(mediaId, accessToken) {
    ========================================================================== */
 
 /**
+ * POST /api/connect-all-channels
+ * Automated One-Click Multi-Channel Onboarding endpoint using Meta User Access Token
+ */
+app.post('/api/connect-all-channels', async (req, res) => {
+  try {
+    const { store_name, user_access_token, wa_data } = req.body;
+
+    if (!store_name || !user_access_token) {
+      return res.status(400).json({ success: false, error: 'Store name and Meta access token are required.' });
+    }
+
+    const connectedChannels = [];
+    let facebookPageId = null;
+    let facebookPageAccessToken = null;
+    let instagramAccountId = null;
+    let whatsappPhoneNumberId = null;
+    let whatsappAccessToken = null;
+
+    // 1. Fetch Facebook Pages & Linked Instagram Accounts
+    try {
+      const pageRes = await axios.get('https://graph.facebook.com/v20.0/me/accounts', {
+        params: {
+          access_token: user_access_token,
+          fields: 'id,name,access_token,instagram_business_account'
+        }
+      });
+
+      const pages = pageRes.data?.data || [];
+      if (pages.length > 0) {
+        const primaryPage = pages[0];
+        facebookPageId = primaryPage.id;
+        facebookPageAccessToken = primaryPage.access_token;
+        connectedChannels.push('Facebook Messenger');
+
+        if (primaryPage.instagram_business_account && primaryPage.instagram_business_account.id) {
+          instagramAccountId = primaryPage.instagram_business_account.id;
+          connectedChannels.push('Instagram DMs');
+        }
+      }
+    } catch (fbErr) {
+      console.error('⚠️ Error fetching Meta Pages:', fbErr.response?.data || fbErr.message);
+    }
+
+    // 2. Resolve WhatsApp Cloud API Details
+    if (wa_data && wa_data.phone_number_id) {
+      whatsappPhoneNumberId = String(wa_data.phone_number_id).trim();
+      whatsappAccessToken = user_access_token;
+      connectedChannels.push('WhatsApp Cloud API');
+    } else {
+      try {
+        const waRes = await axios.get('https://graph.facebook.com/v20.0/me/whatsapp_business_accounts', {
+          params: { access_token: user_access_token }
+        });
+        const waAccounts = waRes.data?.data || [];
+        if (waAccounts.length > 0) {
+          const waAccId = waAccounts[0].id;
+          const phoneRes = await axios.get(`https://graph.facebook.com/v20.0/${waAccId}/phone_numbers`, {
+            params: { access_token: user_access_token }
+          });
+          const phoneNumbers = phoneRes.data?.data || [];
+          if (phoneNumbers.length > 0) {
+            whatsappPhoneNumberId = phoneNumbers[0].id;
+            whatsappAccessToken = user_access_token;
+            connectedChannels.push('WhatsApp Cloud API');
+          }
+        }
+      } catch (waErr) {
+        console.error('⚠️ Error fetching WhatsApp details:', waErr.response?.data || waErr.message);
+      }
+    }
+
+    if (connectedChannels.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No active Facebook Page, Instagram Account, or WhatsApp Business account was found under this Meta profile.'
+      });
+    }
+
+    // Save/Insert into Supabase 'stores'
+    const payload = {
+      store_name: store_name.trim(),
+      whatsapp_phone_number_id: whatsappPhoneNumberId,
+      whatsapp_access_token: whatsappAccessToken,
+      facebook_page_id: facebookPageId,
+      facebook_page_access_token: facebookPageAccessToken,
+      instagram_account_id: instagramAccountId
+    };
+
+    const { data, error } = await supabase
+      .from('stores')
+      .insert([payload])
+      .select();
+
+    if (error) {
+      console.error('❌ Supabase insert error in automated onboarding:', error.message);
+      return res.status(400).json({ success: false, error: error.message });
+    }
+
+    console.log(`✅ Store "${store_name}" automatically connected with channels: ${connectedChannels.join(', ')}`);
+    return res.status(201).json({
+      success: true,
+      connectedChannels,
+      store: data[0]
+    });
+
+  } catch (err) {
+    console.error('❌ Server Error during automated channel onboarding:', err);
+    return res.status(500).json({ success: false, error: 'Internal server error during automated setup.' });
+  }
+});
+
+/**
  * POST /api/onboard-store
- * Registers a new store with flexible multi-channel credentials.
- * Handles any combination of WhatsApp, Facebook, or Instagram.
+ * Registers a new store with manual multi-channel credentials.
  */
 app.post('/api/onboard-store', async (req, res) => {
   try {

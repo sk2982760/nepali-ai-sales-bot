@@ -5,22 +5,47 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Onboard Your Store | AI Sales Bot</title>
   <style>
-    body { font-family: Arial, sans-serif; background: #f4f6f8; margin: 0; padding: 40px 20px; }
-    .container { max-width: 500px; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); margin: 0 auto; }
-    h2 { margin-top: 0; color: #333; }
+    body { font-family: Arial, sans-serif; background: #f4f6f8; margin: 0; padding: 40px 20px; color: #333; }
+    .container { max-width: 550px; background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); margin: 0 auto; }
+    h2 { margin-top: 0; color: #111; }
+    p.subtitle { color: #666; font-size: 14px; margin-top: -5px; margin-bottom: 20px; }
     label { font-weight: bold; display: block; margin-top: 15px; font-size: 14px; }
     input[type="text"] { width: 100%; padding: 10px; margin-top: 5px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
     .channel-box { background: #f9f9f9; padding: 15px; border-radius: 6px; margin-top: 15px; border: 1px solid #e0e0e0; }
     .channel-title { font-weight: bold; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
-    button { width: 100%; background: #0084ff; color: #fff; padding: 12px; border: none; border-radius: 6px; margin-top: 25px; font-size: 16px; font-weight: bold; cursor: pointer; }
-    button:hover { background: #006bce; }
-    #status { margin-top: 15px; font-weight: bold; text-align: center; }
+    button { width: 100%; border: none; border-radius: 6px; padding: 12px; font-size: 16px; font-weight: bold; cursor: pointer; transition: background 0.2s; }
+    .btn-auto { background: #1877F2; color: #fff; margin-top: 15px; }
+    .btn-auto:hover { background: #115cbe; }
+    .btn-manual { background: #0084ff; color: #fff; margin-top: 25px; }
+    .btn-manual:hover { background: #006bce; }
+    .divider { display: flex; align-items: center; text-align: center; margin: 30px 0; color: #888; }
+    .divider::before, .divider::after { content: ''; flex: 1; border-bottom: 1px solid #ddd; }
+    .divider span { padding: 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; font-weight: bold; }
+    .status { margin-top: 15px; font-weight: bold; text-align: center; font-size: 14px; }
   </style>
 </head>
 <body>
 
+<!-- Meta JS SDK -->
+<script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+
 <div class="container">
-  <h2>Onboard New Store</h2>
+  <h2>🚀 Automated Store Onboarding</h2>
+  <p class="subtitle">Connect WhatsApp, Facebook Messenger & Instagram DMs in one click.</p>
+
+  <label for="store_name_auto">Store Name *</label>
+  <input type="text" id="store_name_auto" placeholder="e.g. Luffy Sales Business" required>
+
+  <button id="btnConnectMeta" class="btn-auto">
+    📘 Connect Meta Channels
+  </button>
+  <div id="statusAuto" class="status"></div>
+
+  <div class="divider"><span>OR MANUAL SETUP</span></div>
+
+  <h2>Manual Store Registration</h2>
+  <p class="subtitle">Use this option if you prefer pasting API keys manually.</p>
+
   <form id="onboardForm">
     <label for="store_name">Store Name *</label>
     <input type="text" id="store_name" placeholder="e.g. Luffy Sales Business" required>
@@ -50,12 +75,88 @@
       <input type="text" id="instagram_account_id" placeholder="178414000123456">
     </div>
 
-    <button type="submit">Register Store</button>
+    <button type="submit" class="btn-manual">Register Store Manually</button>
   </form>
-  <div id="status"></div>
+  <div id="status" class="status"></div>
 </div>
 
 <script>
+  // Initialize Meta JS SDK
+  window.fbAsyncInit = function() {
+    FB.init({
+      appId      : '2084739875451287',
+      cookie     : true,
+      xfbml      : true,
+      version    : 'v20.0'
+    });
+  };
+
+  // Capture WhatsApp Embedded Signup payload if event triggers
+  window.addEventListener('message', (event) => {
+    if (event.origin !== 'https://www.facebook.com' && event.origin !== 'https://web.facebook.com') return;
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === 'WA_EMBEDDED_SIGNUP' && data.event === 'FINISH') {
+        window.waSignupData = data.data;
+      }
+    } catch (e) {}
+  });
+
+  // Automated One-Click Multi-Channel Onboarding
+  document.getElementById('btnConnectMeta').addEventListener('click', () => {
+    const storeName = document.getElementById('store_name_auto').value;
+    const statusDiv = document.getElementById('statusAuto');
+
+    if (!storeName) {
+      alert('Please enter a Store Name first.');
+      return;
+    }
+
+    statusDiv.style.color = '#333';
+    statusDiv.innerText = 'Opening Meta OAuth Login...';
+
+    FB.login((response) => {
+      if (response.authResponse) {
+        const userAccessToken = response.authResponse.accessToken;
+        statusDiv.innerText = 'Detecting connected channels and configuring store...';
+
+        fetch('/api/connect-all-channels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            store_name: storeName,
+            user_access_token: userAccessToken,
+            wa_data: window.waSignupData || null
+          })
+        })
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) {
+            statusDiv.style.color = 'green';
+            statusDiv.innerText = `✅ Store Connected! Linked Channels: ${data.connectedChannels.join(', ')}`;
+            document.getElementById('store_name_auto').value = '';
+          } else {
+            statusDiv.style.color = 'red';
+            statusDiv.innerText = '❌ Setup Failed: ' + data.error;
+          }
+        })
+        .catch(err => {
+          statusDiv.style.color = 'red';
+          statusDiv.innerText = '❌ Server communication error.';
+        });
+
+      } else {
+        statusDiv.style.color = 'red';
+        statusDiv.innerText = 'User cancelled or failed login authorization.';
+      }
+    }, {
+      config_id: '2355558175250117',
+      response_type: 'token',
+      override_default_response_type: true
+    });
+  });
+
+  // Manual Onboarding Form Handler
   document.getElementById('onboardForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const statusDiv = document.getElementById('status');
@@ -72,7 +173,7 @@
     };
 
     try {
-      const res = await fetch('https://nepali-ai-sales-bot.onrender.com/api/onboard-store', {
+      const res = await fetch('/api/onboard-store', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
