@@ -490,22 +490,43 @@ app.post('/api/connect-all-channels', async (req, res) => {
           instagramAccountId = primaryPage.instagram_business_account.id;
           connectedChannels.push('Instagram DMs');
         }
+
+        // Subscribe Page to App Webhooks
+        try {
+          await axios.post(
+            `https://graph.facebook.com/v20.0/${facebookPageId}/subscribed_apps`,
+            null,
+            {
+              params: {
+                access_token: facebookPageAccessToken,
+                subscribed_fields: 'messages,messaging_postbacks'
+              }
+            }
+          );
+          console.log(`✅ Successfully subscribed Page (${facebookPageId}) to App webhooks.`);
+        } catch (subErr) {
+          console.warn('⚠️ Webhook subscription notice:', subErr.response?.data?.error?.message || subErr.message);
+        }
       }
     } catch (fbErr) {
       console.error('⚠️ Error fetching Meta Pages:', fbErr.response?.data || fbErr.message);
     }
 
-    // 2. Resolve WhatsApp Cloud API Details
+    // 2. Resolve WhatsApp Cloud API Details Safely
     if (wa_data && wa_data.phone_number_id) {
       whatsappPhoneNumberId = String(wa_data.phone_number_id).trim();
       whatsappAccessToken = user_access_token;
       connectedChannels.push('WhatsApp Cloud API');
     } else {
       try {
-        const waRes = await axios.get('https://graph.facebook.com/v20.0/me/whatsapp_business_accounts', {
-          params: { access_token: user_access_token }
+        const waRes = await axios.get('https://graph.facebook.com/v20.0/me', {
+          params: {
+            fields: 'whatsapp_business_accounts',
+            access_token: user_access_token
+          }
         });
-        const waAccounts = waRes.data?.data || [];
+
+        const waAccounts = waRes.data?.whatsapp_business_accounts?.data || [];
         if (waAccounts.length > 0) {
           const waAccId = waAccounts[0].id;
           const phoneRes = await axios.get(`https://graph.facebook.com/v20.0/${waAccId}/phone_numbers`, {
@@ -519,7 +540,7 @@ app.post('/api/connect-all-channels', async (req, res) => {
           }
         }
       } catch (waErr) {
-        console.error('⚠️ Error fetching WhatsApp details:', waErr.response?.data || waErr.message);
+        console.warn('⚠️ WhatsApp details skipped or unavailable:', waErr.response?.data?.error?.message || waErr.message);
       }
     }
 
