@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Sign In - AI Sales Admin</title>
+  <style>
+    * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    body {
+      background-color: #0b0f19;
+      color: #e2e8f0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+    .auth-card {
+      background-color: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 12px;
+      padding: 40px;
+      width: 100%;
+      max-width: 440px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    .auth-card h2 { margin-top: 0; font-size: 24px; color: #fff; text-align: center; }
+    .auth-card p { text-align: center; color: #9ca3af; font-size: 14px; margin-bottom: 24px; }
+    .form-group { margin-bottom: 18px; }
+    .form-group label { display: block; margin-bottom: 6px; font-size: 13px; color: #cbd5e1; }
+    .form-group input {
+      width: 100%;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid #374151;
+      background-color: #1f2937;
+      color: #fff;
+      font-size: 14px;
+      outline: none;
+    }
+    .form-group input:focus { border-color: #10b981; }
+    .btn {
+      width: 100%;
+      padding: 12px;
+      border-radius: 8px;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background 0.2s;
+    }
+    .btn-primary { background-color: #10b981; color: #000; }
+    .btn-primary:hover { background-color: #059669; color: #fff; }
+    .auth-footer { text-align: center; margin-top: 20px; font-size: 13px; color: #9ca3af; }
+    .auth-footer a { color: #10b981; text-decoration: none; font-weight: 600; }
+    .auth-footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+  <div class="auth-card">
+    <h2>Welcome Back</h2>
+    <p>Sign in to manage your store AI</p>
+
+    <form id="loginForm">
+      <div class="form-group">
+        <label for="email">Email Address</label>
+        <input type="email" id="email" placeholder="name@store.com" required />
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" placeholder="••••••••" required />
+      </div>
+      <button type="submit" class="btn btn-primary">Sign In</button>
+    </form>
+
+    <div class="auth-footer">
+      Don't have an account? <a href="/signup">Sign Up</a>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          window.location.href = '/dashboard';
+        } else {
+          alert('Login Failed: ' + data.error);
+        }
+      } catch (err) {
+        alert('Server error during sign in.');
+      }
+    });
+  </script>
+</body>
+</html>

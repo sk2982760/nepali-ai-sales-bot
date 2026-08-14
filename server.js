@@ -11,7 +11,16 @@ app.use(express.json());
 // Serve static files (e.g. index.html, dashboard.html) from the root directory
 app.use(express.static(__dirname));
 
-// Route to serve the admin dashboard page
+// Serve Auth Pages
+app.get('/signup', (req, res) => {
+  res.sendFile(path.join(__dirname, 'signup.html'));
+});
+
+app.get('/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'login.html'));
+});
+
+// Serve Dashboard
 app.get('/dashboard', (req, res) => {
   res.sendFile(path.join(__dirname, 'dashboard.html'));
 });
