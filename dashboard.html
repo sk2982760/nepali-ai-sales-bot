@@ -9,13 +9,18 @@
 <body class="bg-slate-900 text-slate-100 min-h-screen font-sans">
 
   <!-- Navigation -->
-  <nav class="border-b border-slate-800 bg-slate-950 px-6 py-4 flex justify-between items-center">
+  <nav class="border-b border-slate-800 bg-slate-950 px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
     <div class="flex items-center gap-3">
       <span class="bg-emerald-500 text-slate-950 font-bold px-3 py-1 rounded-md text-sm">LIVE</span>
       <h1 class="text-xl font-bold tracking-wide">AI Sales Admin Dashboard</h1>
     </div>
-    <div class="text-sm text-slate-400">
-      Active Store: <span id="active-store-display" class="font-mono text-emerald-400">Loading...</span>
+    <div class="flex items-center gap-6">
+      <div class="text-sm text-slate-400">
+        Active Store: <span id="active-store-display" class="font-mono text-emerald-400">Loading...</span>
+      </div>
+      <button onclick="handleLogout()" class="text-xs bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 px-3 py-1.5 rounded transition font-semibold">
+        Log Out
+      </button>
     </div>
   </nav>
 
@@ -41,7 +46,9 @@
     <section class="bg-slate-800/40 border border-slate-700/60 rounded-xl overflow-hidden">
       <div class="p-5 border-b border-slate-700/60 flex justify-between items-center">
         <h2 class="text-lg font-bold text-white">Live Customer Orders</h2>
-        <button onclick="loadDashboardData()" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded transition">Refresh Data</button>
+        <button onclick="loadDashboardData()" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded transition">
+          Refresh Data
+        </button>
       </div>
 
       <div class="overflow-x-auto">
@@ -94,9 +101,27 @@
   </main>
 
   <script>
+    // Extract store_id from URL params or localStorage
+    function getActiveStoreId() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlStoreId = urlParams.get('store_id');
+      if (urlStoreId) return urlStoreId;
+
+      return localStorage.getItem('store_id');
+    }
+
     async function loadDashboardData() {
+      const storeId = getActiveStoreId();
+
+      // If no store ID found, redirect to login page
+      if (!storeId) {
+        console.warn('No active store ID found. Redirecting to login...');
+        window.location.href = '/login';
+        return;
+      }
+
       try {
-        const res = await fetch('/api/dashboard');
+        const res = await fetch(`/api/dashboard?store_id=${encodeURIComponent(storeId)}`);
         const data = await res.json();
 
         if (!data.store) {
@@ -104,7 +129,10 @@
           return;
         }
 
-        document.getElementById('active-store-display').textContent = `${data.store.store_name} (${data.store.id.substring(0,8)}...)`;
+        // Store active store ID locally
+        localStorage.setItem('store_id', data.store.id);
+
+        document.getElementById('active-store-display').textContent = `${data.store.store_name} (${data.store.id.substring(0, 8)}...)`;
 
         // Render Orders
         const ordersTbody = document.getElementById('orders-table-body');
@@ -116,16 +144,18 @@
               <td class="p-4 font-mono">${o.phone_number || 'N/A'}</td>
               <td class="p-4">${o.delivery_location || 'N/A'}</td>
               <td class="p-4">${o.product_title || 'N/A'}</td>
-              <td class="p-4 font-bold text-slate-100">NPR ${o.total_price_npr || 1500}</td>
+              <td class="p-4 font-bold text-slate-100">NPR ${(o.total_price_npr || 0).toLocaleString()}</td>
               <td class="p-4 text-xs text-slate-400">${new Date(o.created_at).toLocaleString()}</td>
             </tr>
           `).join('');
 
           document.getElementById('kpi-orders').textContent = data.orders.length;
-          const totalRev = data.orders.reduce((sum, item) => sum + (Number(item.total_price_npr) || 1500), 0);
+          const totalRev = data.orders.reduce((sum, item) => sum + (Number(item.total_price_npr) || 0), 0);
           document.getElementById('kpi-revenue').textContent = `NPR ${totalRev.toLocaleString()}`;
         } else {
           ordersTbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-slate-500">No orders found yet.</td></tr>`;
+          document.getElementById('kpi-orders').textContent = '0';
+          document.getElementById('kpi-revenue').textContent = 'NPR 0';
         }
 
         // Render Products
@@ -134,7 +164,7 @@
           productsTbody.innerHTML = data.products.map(p => `
             <tr class="hover:bg-slate-800/50 transition">
               <td class="p-4 font-semibold text-white">${p.title}</td>
-              <td class="p-4 font-mono text-emerald-400">NPR ${p.price_npr}</td>
+              <td class="p-4 font-mono text-emerald-400">NPR ${(p.price_npr || 0).toLocaleString()}</td>
               <td class="p-4 font-bold ${p.stock_quantity > 0 ? 'text-indigo-400' : 'text-rose-400'}">${p.stock_quantity} remaining</td>
               <td class="p-4">
                 <span class="px-2.5 py-1 text-xs rounded-full font-semibold ${p.stock_quantity > 0 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">
@@ -147,10 +177,17 @@
           document.getElementById('kpi-products').textContent = data.products.length;
         } else {
           productsTbody.innerHTML = `<tr><td colspan="4" class="p-6 text-center text-slate-500">No products found in inventory.</td></tr>`;
+          document.getElementById('kpi-products').textContent = '0';
         }
       } catch (err) {
         console.error('Failed to load dashboard:', err);
       }
+    }
+
+    function handleLogout() {
+      localStorage.removeItem('store_id');
+      localStorage.removeItem('supabase_session');
+      window.location.href = '/login';
     }
 
     document.addEventListener('DOMContentLoaded', loadDashboardData);
