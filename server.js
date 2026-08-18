@@ -4,6 +4,7 @@ const path = require('path');
 const Groq = require('groq-sdk');
 const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
+const cron = require('node-cron');
 
 const app = express();
 app.use(express.json());
@@ -67,10 +68,6 @@ function cleanAiResponse(text) {
    SUPABASE AUTHENTICATION ENDPOINTS
    ========================================================================== */
 
-/**
- * POST /api/signup
- * Registers a new store owner in Supabase Auth and creates their store record.
- */
 app.post('/api/signup', async (req, res) => {
   try {
     const { storeName, email, password } = req.body;
@@ -79,7 +76,6 @@ app.post('/api/signup', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Store name, email, and password are required.' });
     }
 
-    // 1. Create user in Supabase Auth
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
       password,
@@ -94,10 +90,8 @@ app.post('/api/signup', async (req, res) => {
       return res.status(500).json({ success: false, error: 'Failed to retrieve user ID.' });
     }
 
-    // 2. Generate slug for the store
     const slug = storeName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
-    // 3. Create the store record linked to the owner's Auth ID
     const { data: storeData, error: storeError } = await supabase
       .from('stores')
       .insert([
@@ -128,10 +122,6 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
-/**
- * POST /api/login
- * Authenticates store owner via Supabase Auth and returns session details.
- */
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -140,7 +130,6 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email and password are required.' });
     }
 
-    // Authenticate user with Supabase Auth
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -150,7 +139,6 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ success: false, error: authError.message });
     }
 
-    // Fetch the store tied to this user
     const { data: storeData } = await supabase
       .from('stores')
       .select('*')
@@ -240,10 +228,17 @@ async function getStoreInventory(storeId) {
     .join('\n');
 }
 
-async function saveChatMessage(storeId, senderPsid, role, content) {
+async function saveChatMessage(storeId, senderPsid, role, content, requiresFollowup = false) {
   try {
     const { error } = await supabase.from('chat_messages').insert([
-      { store_id: storeId, sender_psid: senderPsid, role, content }
+      { 
+        store_id: storeId, 
+        sender_psid: senderPsid, 
+        role, 
+        content,
+        requires_followup: requiresFollowup,
+        last_activity_at: new Date().toISOString()
+      }
     ]);
     if (error) console.error('Error saving chat message:', error);
   } catch (err) {
@@ -271,6 +266,7 @@ async function saveOrder({ store_id, customer_name, phone_number, delivery_locat
     return { success: false, error: 'Incomplete user details provided.' };
   }
 
+  // Save order as 'unconfirmed' (Pending COD verification)
   const { data: orderData, error: orderError } = await supabase
     .from('orders')
     .insert([
@@ -282,7 +278,8 @@ async function saveOrder({ store_id, customer_name, phone_number, delivery_locat
         product_title,
         quantity: orderQuantity,
         total_price_npr,
-        delivery_charge_npr
+        delivery_charge_npr,
+        status: 'unconfirmed'
       }
     ])
     .select();
@@ -386,7 +383,7 @@ EXAMPLES:
     const aiReply = cleanAiResponse(rawReply) || 'Hajur, photo clear dekhiyana. Kripaya punah photo pathaunu hola.';
 
     await saveChatMessage(store.id, senderPsid, 'user', '[Sent an image]');
-    await saveChatMessage(store.id, senderPsid, 'assistant', aiReply);
+    await saveChatMessage(store.id, senderPsid, 'assistant', aiReply, true);
 
     return aiReply;
   } catch (err) {
@@ -401,6 +398,30 @@ async function processCustomerMessage(userMessage, senderPsid, store) {
 
   const lowerMsg = userMessage.toLowerCase().trim();
 
+  /* --------------------------------------------------------------------------
+     FEATURE 1: AUTOMATED COD CONFIRMATION INTERCEPTION ("YES" / "CONFIRM")
+     -------------------------------------------------------------------------- */
+  const { data: pendingOrder } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('store_id', store.id)
+    .eq('status', 'unconfirmed')
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (pendingOrder && (lowerMsg === 'yes' || lowerMsg === 'confirm' || lowerMsg.includes('ho confirm'))) {
+    await supabase
+      .from('orders')
+      .update({ status: 'confirmed' })
+      .eq('id', pendingOrder.id);
+
+    const codConfirmedReply = `Dhanyabad ${pendingOrder.customer_name} hajur! Tapai ko Order (#${pendingOrder.id}) fully CONFIRM bhako chha. Hami chhitai delivery pranti rwanag garnechhaum.`;
+    await saveChatMessage(store.id, senderPsid, 'user', userMessage);
+    await saveChatMessage(store.id, senderPsid, 'assistant', codConfirmedReply, false);
+    return codConfirmedReply;
+  }
+
   const orderDeclinedOrDelayed = lowerMsg.includes('paxi') || 
                                  lowerMsg.includes('pachi') || 
                                  lowerMsg.includes('ahile gardina') || 
@@ -412,7 +433,7 @@ async function processCustomerMessage(userMessage, senderPsid, store) {
   const isSimpleAck = lowerMsg === 'huss' || lowerMsg === 'okay' || lowerMsg === 'ok' || lowerMsg === 'dhanyabad' || lowerMsg === 'thank you';
 
   const lastAssistantMsg = [...chatHistory].reverse().find(m => m.role === 'assistant');
-  const isOrderAlreadyConfirmed = lastAssistantMsg && lastAssistantMsg.content.includes('confirm bhayo');
+  const isOrderAlreadyConfirmed = lastAssistantMsg && (lastAssistantMsg.content.includes('confirm bhayo') || lastAssistantMsg.content.includes('CONFIRM bhako'));
 
   const shouldDisableTools = isOrderAlreadyConfirmed || orderDeclinedOrDelayed || isSimpleAck;
 
@@ -473,19 +494,22 @@ CRITICAL TOOL CALLING INSTRUCTION:
 
       let orderReply = '';
       if (orderResult.success) {
-        orderReply = `Dhanyabad ${orderArgs.customer_name} hajur! Tapai ko order (Order ID: #${orderResult.order.id}) confirm bhayo. Hami chhitai ${orderArgs.phone_number} ma call garera delivery confirm garnechha.`;
+        // Feature 1: Prompt for "YES" reply to confirm Cash-On-Delivery
+        orderReply = `Dhanyabad ${orderArgs.customer_name} hajur! Tapai ko order (Order ID: #${orderResult.order.id}) register bhayo. Order final confirm garna kripaya **YES** bhanera reply garnuhola.`;
       } else {
         orderReply = 'Hajur, order confirm garda kehi samasya aayo. Kripaya full name ra phone number punah check garera pathaunu hola.';
       }
 
-      await saveChatMessage(store.id, senderPsid, 'assistant', orderReply);
+      await saveChatMessage(store.id, senderPsid, 'assistant', orderReply, false);
       return orderReply;
     }
   }
 
   const rawReply = responseMessage.content || '';
   const aiReply = cleanAiResponse(rawReply) || 'Hajur, kehi technical samasya aayo. Kripaya feri prayas garnuhos.';
-  await saveChatMessage(store.id, senderPsid, 'assistant', aiReply);
+  
+  // Flag chat as eligible for abandoned follow-up if customer drops off
+  await saveChatMessage(store.id, senderPsid, 'assistant', aiReply, true);
 
   return aiReply;
 }
@@ -518,6 +542,153 @@ async function sendTextMessage(senderPsid, responseText, accessToken) {
     console.error('Failed to send text message:', error);
   }
 }
+
+/* ==========================================================================
+   FEATURE 2: INSTAGRAM & FACEBOOK COMMENT-TO-DM PRIVATE REPLIES
+   ========================================================================== */
+
+async function handleCommentEvent(changeValue, pageOrIgId) {
+  try {
+    const commentId = changeValue.comment_id || changeValue.id;
+    const commentText = changeValue.message || '';
+    const senderPsid = changeValue.from?.id;
+
+    if (!commentId || !senderPsid) return;
+
+    const store = await getStoreByPlatformId({ facebookPageId: pageOrIgId, instagramAccountId: pageOrIgId });
+    if (!store) return;
+
+    const token = store.facebook_page_access_token || process.env.META_ACCESS_TOKEN || '';
+
+    // Step A: Public reply on the comment
+    await axios.post(`https://graph.facebook.com/v20.0/${commentId}/comments`, {
+      message: 'Hajur check your DM! Sent you details 😊'
+    }, {
+      params: { access_token: token }
+    });
+
+    // Step B: Send Private DM via Meta Private Replies API
+    const dmReply = await processCustomerMessage(`Customer commented: "${commentText}". Provide price and availability details.`, senderPsid, store);
+    
+    await axios.post(`https://graph.facebook.com/v20.0/${commentId}/private_replies`, {
+      message: dmReply
+    }, {
+      params: { access_token: token }
+    });
+
+    console.log(`💬 Private DM sent for comment ID: ${commentId}`);
+  } catch (err) {
+    console.error('⚠️ Comment-to-DM Error:', err.response?.data || err.message);
+  }
+}
+
+/* ==========================================================================
+   FEATURE 3: 1-CLICK PATHAO COURIER DISPATCH ENDPOINT
+   ========================================================================== */
+
+app.post('/api/orders/:id/dispatch', async (req, res) => {
+  try {
+    const orderId = req.params.id;
+
+    // Fetch order details
+    const { data: order, error } = await supabase
+      .from('orders')
+      .select('*, stores(*)')
+      .eq('id', orderId)
+      .single();
+
+    if (error || !order) {
+      return res.status(404).json({ success: false, error: 'Order not found.' });
+    }
+
+    // Call Pathao Courier API
+    const pathaoResponse = await axios.post(
+      `${process.env.PATHAO_BASE_URL || 'https://api-hermes.pathao.com'}/aladdin/api/v1/orders`,
+      {
+        store_id: process.env.PATHAO_STORE_ID,
+        recipient_name: order.customer_name,
+        recipient_phone: order.phone_number,
+        recipient_address: order.delivery_location,
+        amount_to_collect: order.total_price_npr + order.delivery_charge_npr,
+        item_type: 2, // Parcel
+        delivery_type: 48, // Standard Delivery
+        item_quantity: order.quantity,
+        item_weight: 0.5
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.PATHAO_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const trackingId = pathaoResponse.data?.data?.consignment_id || `PTH-${Date.now()}`;
+
+    // Update order status in Supabase
+    await supabase
+      .from('orders')
+      .update({
+        status: 'dispatched',
+        courier_tracking_id: trackingId,
+        dispatch_provider: 'Pathao'
+      })
+      .eq('id', orderId);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Order dispatched to Pathao successfully!',
+      tracking_id: trackingId
+    });
+
+  } catch (err) {
+    console.error('❌ Pathao Dispatch Error:', err.response?.data || err.message);
+    return res.status(500).json({
+      success: false,
+      error: err.response?.data?.message || 'Failed to dispatch order to Pathao.'
+    });
+  }
+});
+
+/* ==========================================================================
+   FEATURE 4: SMART ABANDONED CHAT RECOVERY (BACKGROUND CRON JOB)
+   ========================================================================== */
+
+// Runs every hour to check for leads inactive for >4 hours
+cron.schedule('0 * * * *', async () => {
+  console.log('⏰ Running Abandoned Chat Recovery Cron...');
+
+  try {
+    const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+
+    // Find chats needing follow-up
+    const { data: abandonedChats, error } = await supabase
+      .from('chat_messages')
+      .select('*, stores(*)')
+      .eq('requires_followup', true)
+      .lt('last_activity_at', fourHoursAgo);
+
+    if (error || !abandonedChats || abandonedChats.length === 0) return;
+
+    for (const chat of abandonedChats) {
+      const store = chat.stores;
+      if (!store) continue;
+
+      const followUpMsg = `Namaste hajur! Tapai le asti sodhnubhako item ko stock limited chha. Order book garidim? 😊`;
+      const token = store.facebook_page_access_token || process.env.META_ACCESS_TOKEN || '';
+
+      await sendTextMessage(chat.sender_psid, followUpMsg, token);
+
+      // Disable further follow-ups for this chat session
+      await supabase
+        .from('chat_messages')
+        .update({ requires_followup: false })
+        .eq('id', chat.id);
+    }
+  } catch (cronErr) {
+    console.error('❌ Cron Recovery Error:', cronErr);
+  }
+});
 
 /* ==========================================================================
    STORE ONBOARDING API ROUTES
@@ -759,10 +930,17 @@ app.post('/webhook', async (req, res) => {
 
     for (const entry of body.entry || []) {
       const pageOrIgId = entry.id;
-      let messagingEvents = entry.messaging || [];
-      if (!entry.messaging && entry.changes) {
-        messagingEvents = entry.changes.map(c => c.value);
+
+      // Handle Comment Webhook Events
+      if (entry.changes) {
+        for (const change of entry.changes) {
+          if (change.field === 'comments' || change.field === 'feed') {
+            await handleCommentEvent(change.value, pageOrIgId);
+          }
+        }
       }
+
+      const messagingEvents = entry.messaging || [];
 
       for (const messagingEvent of messagingEvents) {
         const senderPsid = messagingEvent.sender?.id || messagingEvent.from?.id;
