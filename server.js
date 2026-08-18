@@ -975,7 +975,71 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(404);
   }
 });
+/* ==========================================================================
+   UNIFIED MULTI-CHANNEL INBOX ENDPOINTS
+   ========================================================================== */
 
+// Serve Inbox Page
+app.get('/inbox', (req, res) => {
+  res.sendFile(path.join(__dirname, 'inbox.html'));
+});
+
+// Fetch distinct conversation threads
+app.get('/api/inbox/conversations', async (req, res) => {
+  try {
+    const { store_id } = req.query;
+    
+    let query = supabase
+      .from('chat_messages')
+      .select('sender_psid, content, created_at, store_id')
+      .order('created_at', { ascending: false });
+
+    if (store_id) {
+      query = query.eq('store_id', store_id);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    // Deduplicate to get the latest message per customer thread
+    const threads = [];
+    const seenPsids = new Set();
+
+    for (const msg of data || []) {
+      if (!seenPsids.has(msg.sender_psid)) {
+        seenPsids.add(msg.sender_psid);
+        threads.push({
+          sender_psid: msg.sender_psid,
+          last_message: msg.content,
+          last_activity_at: msg.created_at
+        });
+      }
+    }
+
+    return res.json(threads);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Fetch full thread history for a single customer
+app.get('/api/inbox/messages', async (req, res) => {
+  try {
+    const { sender_psid } = req.query;
+    if (!sender_psid) return res.status(400).json({ error: 'sender_psid is required' });
+
+    const { data, error } = await supabase
+      .from('chat_messages')
+      .select('role, content, created_at')
+      .eq('sender_psid', sender_psid)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    return res.json(data || []);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
 // Start Express Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {

@@ -14,10 +14,13 @@
       <span class="bg-emerald-500 text-slate-950 font-bold px-3 py-1 rounded-md text-sm">LIVE</span>
       <h1 class="text-xl font-bold tracking-wide">AI Sales Admin Dashboard</h1>
     </div>
-    <div class="flex items-center gap-6">
+    <div class="flex items-center gap-4">
       <div class="text-sm text-slate-400">
         Active Store: <span id="active-store-display" class="font-mono text-emerald-400">Loading...</span>
       </div>
+      <a href="/inbox" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-3 py-1.5 rounded transition flex items-center gap-1.5">
+        💬 Live Inbox
+      </a>
       <button onclick="handleLogout()" class="text-xs bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 px-3 py-1.5 rounded transition font-semibold">
         Log Out
       </button>
@@ -27,17 +30,21 @@
   <main class="max-w-7xl mx-auto p-6 space-y-8">
 
     <!-- KPI Summary Cards -->
-    <section class="grid grid-cols-1 md:grid-cols-3 gap-6">
+    <section class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-6">
       <div class="bg-slate-800/60 border border-slate-700/60 p-5 rounded-xl">
         <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Orders</p>
         <h3 class="text-3xl font-extrabold text-white mt-2" id="kpi-orders">0</h3>
       </div>
       <div class="bg-slate-800/60 border border-slate-700/60 p-5 rounded-xl">
-        <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Revenue</p>
+        <p class="text-xs font-semibold text-amber-400 uppercase tracking-wider">Pending COD</p>
+        <h3 class="text-3xl font-extrabold text-amber-400 mt-2" id="kpi-pending-cod">0</h3>
+      </div>
+      <div class="bg-slate-800/60 border border-slate-700/60 p-5 rounded-xl">
+        <p class="text-xs font-semibold text-emerald-400 uppercase tracking-wider">Confirmed Revenue</p>
         <h3 class="text-3xl font-extrabold text-emerald-400 mt-2" id="kpi-revenue">NPR 0</h3>
       </div>
       <div class="bg-slate-800/60 border border-slate-700/60 p-5 rounded-xl">
-        <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Products</p>
+        <p class="text-xs font-semibold text-indigo-400 uppercase tracking-wider">Active Products</p>
         <h3 class="text-3xl font-extrabold text-indigo-400 mt-2" id="kpi-products">0</h3>
       </div>
     </section>
@@ -47,7 +54,7 @@
       <div class="p-5 border-b border-slate-700/60 flex justify-between items-center">
         <h2 class="text-lg font-bold text-white">Live Customer Orders</h2>
         <button onclick="loadDashboardData()" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded transition">
-          Refresh Data
+          🔄 Refresh Data
         </button>
       </div>
 
@@ -61,12 +68,13 @@
               <th class="p-4">Delivery Address</th>
               <th class="p-4">Product Ordered</th>
               <th class="p-4">Total Amount</th>
-              <th class="p-4">Order Date</th>
+              <th class="p-4">Status</th>
+              <th class="p-4 text-right">Actions</th>
             </tr>
           </thead>
           <tbody id="orders-table-body" class="divide-y divide-slate-700/50">
             <tr>
-              <td colspan="7" class="p-6 text-center text-slate-500">Loading orders...</td>
+              <td colspan="8" class="p-6 text-center text-slate-500">Loading orders...</td>
             </tr>
           </tbody>
         </table>
@@ -101,7 +109,6 @@
   </main>
 
   <script>
-    // Extract store_id from URL params or localStorage
     function getActiveStoreId() {
       const urlParams = new URLSearchParams(window.location.search);
       const urlStoreId = urlParams.get('store_id');
@@ -113,7 +120,6 @@
     async function loadDashboardData() {
       const storeId = getActiveStoreId();
 
-      // If no store ID found, redirect to login page
       if (!storeId) {
         console.warn('No active store ID found. Redirecting to login...');
         window.location.href = '/login';
@@ -129,32 +135,56 @@
           return;
         }
 
-        // Store active store ID locally
         localStorage.setItem('store_id', data.store.id);
-
         document.getElementById('active-store-display').textContent = `${data.store.store_name} (${data.store.id.substring(0, 8)}...)`;
 
         // Render Orders
         const ordersTbody = document.getElementById('orders-table-body');
         if (data.orders && data.orders.length > 0) {
-          ordersTbody.innerHTML = data.orders.map(o => `
-            <tr class="hover:bg-slate-800/50 transition">
-              <td class="p-4 font-mono text-emerald-400">#${o.id}</td>
-              <td class="p-4 font-semibold text-white">${o.customer_name || 'N/A'}</td>
-              <td class="p-4 font-mono">${o.phone_number || 'N/A'}</td>
-              <td class="p-4">${o.delivery_location || 'N/A'}</td>
-              <td class="p-4">${o.product_title || 'N/A'}</td>
-              <td class="p-4 font-bold text-slate-100">NPR ${(o.total_price_npr || 0).toLocaleString()}</td>
-              <td class="p-4 text-xs text-slate-400">${new Date(o.created_at).toLocaleString()}</td>
-            </tr>
-          `).join('');
+          ordersTbody.innerHTML = data.orders.map(o => {
+            const total = (Number(o.total_price_npr) || 0) + (Number(o.delivery_charge_npr) || 0);
+            
+            let statusBadge = '';
+            let actionBtn = '';
 
+            if (o.status === 'confirmed') {
+              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Confirmed</span>`;
+              actionBtn = `<button onclick="dispatchOrder(${o.id})" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3 py-1.5 rounded transition">🚀 Dispatch Pathao</button>`;
+            } else if (o.status === 'dispatched') {
+              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Dispatched</span>`;
+              actionBtn = `<span class="text-xs text-slate-500 font-mono">${o.courier_tracking_id || 'Pathao'}</span>`;
+            } else {
+              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Pending COD</span>`;
+              actionBtn = `<span class="text-xs text-slate-500 italic">Awaiting 'YES'</span>`;
+            }
+
+            return `
+              <tr class="hover:bg-slate-800/50 transition">
+                <td class="p-4 font-mono text-emerald-400">#${o.id}</td>
+                <td class="p-4 font-semibold text-white">${o.customer_name || 'N/A'}</td>
+                <td class="p-4 font-mono">${o.phone_number || 'N/A'}</td>
+                <td class="p-4">${o.delivery_location || 'N/A'}</td>
+                <td class="p-4">${o.product_title || 'N/A'} (x${o.quantity || 1})</td>
+                <td class="p-4 font-bold text-slate-100">NPR ${total.toLocaleString()}</td>
+                <td class="p-4">${statusBadge}</td>
+                <td class="p-4 text-right">${actionBtn}</td>
+              </tr>
+            `;
+          }).join('');
+
+          // Update KPI Stats
           document.getElementById('kpi-orders').textContent = data.orders.length;
-          const totalRev = data.orders.reduce((sum, item) => sum + (Number(item.total_price_npr) || 0), 0);
-          document.getElementById('kpi-revenue').textContent = `NPR ${totalRev.toLocaleString()}`;
+          document.getElementById('kpi-pending-cod').textContent = data.orders.filter(o => o.status === 'unconfirmed').length;
+          
+          const confirmedRev = data.orders
+            .filter(o => o.status === 'confirmed' || o.status === 'dispatched')
+            .reduce((sum, item) => sum + (Number(item.total_price_npr) || 0) + (Number(item.delivery_charge_npr) || 0), 0);
+            
+          document.getElementById('kpi-revenue').textContent = `NPR ${confirmedRev.toLocaleString()}`;
         } else {
-          ordersTbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-slate-500">No orders found yet.</td></tr>`;
+          ordersTbody.innerHTML = `<tr><td colspan="8" class="p-6 text-center text-slate-500">No orders found yet.</td></tr>`;
           document.getElementById('kpi-orders').textContent = '0';
+          document.getElementById('kpi-pending-cod').textContent = '0';
           document.getElementById('kpi-revenue').textContent = 'NPR 0';
         }
 
@@ -181,6 +211,24 @@
         }
       } catch (err) {
         console.error('Failed to load dashboard:', err);
+      }
+    }
+
+    async function dispatchOrder(orderId) {
+      if (!confirm(`Are you sure you want to dispatch Order #${orderId} via Pathao Courier?`)) return;
+
+      try {
+        const res = await fetch(`/api/orders/${orderId}/dispatch`, { method: 'POST' });
+        const result = await res.json();
+
+        if (result.success) {
+          alert(`Order dispatched successfully! Tracking ID: ${result.tracking_id}`);
+          loadDashboardData();
+        } else {
+          alert(`Failed to dispatch: ${result.error}`);
+        }
+      } catch (err) {
+        alert('Network error while dispatching order.');
       }
     }
 
