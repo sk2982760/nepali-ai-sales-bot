@@ -79,28 +79,31 @@
     </div>
   </div>
 
-  <script>
-    document.getElementById('loginForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const email = document.getElementById('email').value;
-      const password = document.getElementById('password').value;
+<script>
+  document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
 
-      try {
-        const res = await fetch('/api/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
-        });
-        const data = await res.json();
-        if (data.success) {
-          window.location.href = '/dashboard';
-        } else {
-          alert('Login Failed: ' + data.error);
-        }
-      } catch (err) {
-        alert('Server error during sign in.');
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+
+      if (data.success && data.store_id) {
+        // Save store_id so dashboard knows which store is active
+        localStorage.setItem('store_id', data.store_id);
+        window.location.href = `/dashboard?store_id=${encodeURIComponent(data.store_id)}`;
+      } else {
+        alert('Login Failed: ' + (data.error || 'Invalid credentials'));
       }
-    });
-  </script>
+    } catch (err) {
+      alert('Server error during sign in.');
+    }
+  });
+</script>
 </body>
 </html>
