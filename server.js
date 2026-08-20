@@ -1069,28 +1069,24 @@ app.post('/api/request-password-reset', async (req, res) => {
   }
 });
 
-// Save New Password using Admin Privileges
 app.post('/api/update-password', async (req, res) => {
   try {
     const { accessToken, newPassword } = req.body;
 
     if (!accessToken || !newPassword) {
-      return res.status(400).json({ success: false, error: 'Missing access token or new password.' });
+      return res.status(400).json({ success: false, error: 'Access token or password missing.' });
     }
 
-    // Verify token to get user ID
-    const { data: { user }, error: userError } = await supabase.auth.getUser(accessToken);
-    if (userError || !user) {
-      return res.status(401).json({ success: false, error: 'Invalid or expired session token.' });
+    const { data, error: userError } = await supabase.auth.getUser(accessToken);
+    if (userError || !data || !data.user) {
+      return res.status(401).json({ success: false, error: 'Invalid or expired session link.' });
     }
 
-    // Use admin client to force update the user's password in Supabase Auth
-    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
+    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(data.user.id, {
       password: newPassword
     });
 
     if (updateError) throw updateError;
-
     return res.json({ success: true });
   } catch (err) {
     console.error("Password Update Error:", err.message);
