@@ -1042,6 +1042,44 @@ app.get('/api/inbox/messages', async (req, res) => {
 });
 // Start Express Server
 const PORT = process.env.PORT || 3000;
+// Serve Reset Password Page
+app.get('/reset-password', (req, res) => {
+  res.sendFile(path.join(__dirname, 'reset-password.html'));
+});
+
+// Request Password Reset Link
+app.post('/api/request-password-reset', async (req, res) => {
+  try {
+    const { email } = req.body;
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: 'https://nepali-ai-sales-bot.onrender.com/reset-password',
+    });
+
+    if (error) throw error;
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Save New Password
+app.post('/api/update-password', async (req, res) => {
+  try {
+    const { accessToken, newPassword } = req.body;
+
+    // Verify token and update password on Supabase Auth
+    const { data, error } = await supabase.auth.admin.updateUserById(
+      // Decode user from access token session
+      (await supabase.auth.getUser(accessToken)).data.user.id,
+      { password: newPassword }
+    );
+
+    if (error) throw error;
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
 app.listen(PORT, () => {
   console.log(`🚀 AI Sales Admin Server running on http://localhost:${PORT}`);
 });

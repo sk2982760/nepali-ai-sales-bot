@@ -71,6 +71,14 @@
         <label for="password">Password</label>
         <input type="password" id="password" placeholder="••••••••" required />
       </div>
+
+      <!-- FORGOT PASSWORD LINK ADDED HERE -->
+      <div style="text-align: right; margin-bottom: 18px; margin-top: -8px;">
+        <a href="#" onclick="handleForgotPassword(event)" style="color: #10b981; font-size: 12px; text-decoration: none; font-weight: 600;">
+          Forgot Password?
+        </a>
+      </div>
+
       <button type="submit" class="btn btn-primary">Sign In</button>
     </form>
 
@@ -94,7 +102,6 @@
       const data = await res.json();
 
       if (data.success && data.store_id) {
-        // Save store_id so dashboard knows which store is active
         localStorage.setItem('store_id', data.store_id);
         window.location.href = `/dashboard?store_id=${encodeURIComponent(data.store_id)}`;
       } else {
@@ -104,6 +111,30 @@
       alert('Server error during sign in.');
     }
   });
+
+  // FORGOT PASSWORD HANDLER ADDED HERE
+  async function handleForgotPassword(e) {
+    e.preventDefault();
+    const email = prompt("Enter your registered email address to receive a password reset link:");
+    if (!email) return;
+
+    try {
+      const res = await fetch('/api/request-password-reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim() })
+      });
+      const data = await res.json();
+
+      if (data.success) {
+        alert("Check your inbox! We've sent a password reset link.");
+      } else {
+        alert("Reset failed: " + (data.error || "Unable to process request."));
+      }
+    } catch (err) {
+      alert("Error sending password reset request.");
+    }
+  }
 </script>
 </body>
 </html>
