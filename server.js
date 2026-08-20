@@ -5,7 +5,14 @@ const Groq = require('groq-sdk');
 const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 const cron = require('node-cron');
+// Existing initialization
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+// ADD THIS LINE RIGHT BELOW IT:
+const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL, 
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
+);
 const app = express();
 app.use(express.json());
 
@@ -1062,21 +1069,31 @@ app.post('/api/request-password-reset', async (req, res) => {
   }
 });
 
-// Save New Password
+// Save New Password using Admin Privileges
 app.post('/api/update-password', async (req, res) => {
   try {
     const { accessToken, newPassword } = req.body;
 
-    // Verify token and update password on Supabase Auth
-    const { data, error } = await supabase.auth.admin.updateUserById(
-      // Decode user from access token session
-      (await supabase.auth.getUser(accessToken)).data.user.id,
-      { password: newPassword }
-    );
+    if (!accessToken || !newPassword) {
+      return res.status(400).json({ success: false, error: 'Missing access token or new password.' });
+    }
 
-    if (error) throw error;
+    // Verify token to get user ID
+    const { data: { user }, error: userError } = await supabase.auth.getUser(accessToken);
+    if (userError || !user) {
+      return res.status(401).json({ success: false, error: 'Invalid or expired session token.' });
+    }
+
+    // Use admin client to force update the user's password in Supabase Auth
+    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(user.id, {
+      password: newPassword
+    });
+
+    if (updateError) throw updateError;
+
     return res.json({ success: true });
   } catch (err) {
+    console.error("Password Update Error:", err.message);
     return res.status(400).json({ success: false, error: err.message });
   }
 });
