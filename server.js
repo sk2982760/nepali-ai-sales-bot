@@ -48,12 +48,6 @@ function trackProcessedMessageId(messageId) {
   return false;
 }
 
-// Initialize Supabase Client
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
-
 // Initialize Groq Client
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
