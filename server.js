@@ -5,9 +5,11 @@ const Groq = require('groq-sdk');
 const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 const cron = require('node-cron');
-// Existing initialization
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-
+// Ensure process.env.SUPABASE_KEY matches your Render environment variable name
+const supabase = createClient(
+  process.env.SUPABASE_URL, 
+  process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY
+);
 // ADD THIS LINE RIGHT BELOW IT:
 const supabaseAdmin = createClient(
   process.env.SUPABASE_URL, 
