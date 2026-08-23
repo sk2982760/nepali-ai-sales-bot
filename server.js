@@ -5,6 +5,8 @@ const Groq = require('groq-sdk');
 const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 const cron = require('node-cron');
+const bcrypt = require('bcryptjs');
+
 // Ensure process.env.SUPABASE_KEY matches your Render environment variable name
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY;
@@ -26,6 +28,7 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     autoRefreshToken: false
   }
 });
+
 const app = express();
 app.use(express.json());
 
@@ -44,6 +47,11 @@ app.get('/login', (req, res) => {
 // Serve Dashboard
 app.get('/dashboard', (req, res) => {
   res.sendFile(path.join(__dirname, 'dashboard.html'));
+});
+
+// Serve Reset Password Page
+app.get('/reset-password', (req, res) => {
+  res.sendFile(path.join(__dirname, 'reset-password.html'));
 });
 
 // Deduplication cache to prevent Meta double-webhook executions
@@ -81,8 +89,6 @@ function cleanAiResponse(text) {
 /* ==========================================================================
    SUPABASE AUTHENTICATION ENDPOINTS
    ========================================================================== */
-
-const bcrypt = require('bcryptjs');
 
 app.post('/api/signup', async (req, res) => {
   try {
@@ -156,7 +162,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid credentials' });
     }
 
-    // Direct password match check (bypasses bcrypt temporary for testing if needed)
+    // Direct password match check (supports both bcrypt and plaintext fallbacks)
     let isMatch = false;
     if (store.password && store.password.startsWith('$2a$')) {
       isMatch = await bcrypt.compare(cleanPassword, store.password);
@@ -180,6 +186,55 @@ app.post('/api/login', async (req, res) => {
   } catch (err) {
     console.error("Login Crash:", err);
     return res.status(500).json({ success: false, error: 'Internal server error.' });
+  }
+});
+
+app.post('/api/request-password-reset', async (req, res) => {
+  try {
+    const { email } = req.body;
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: 'https://nepali-ai-sales-bot.onrender.com/reset-password',
+    });
+
+    if (error) throw error;
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/update-password', async (req, res) => {
+  try {
+    const { accessToken, newPassword } = req.body;
+
+    if (!accessToken || !newPassword) {
+      return res.status(400).json({ success: false, error: 'Missing token or password.' });
+    }
+
+    const { data: userData, error: userError } = await supabase.auth.getUser(accessToken);
+    if (userError || !userData?.user) {
+      return res.status(401).json({ success: false, error: 'Link expired or invalid. Please request a new one.' });
+    }
+
+    const userId = userData.user.id;
+    const userEmail = userData.user.email;
+
+    const { error: updateAuthError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+      password: newPassword
+    });
+
+    if (updateAuthError) throw updateAuthError;
+
+    await supabase
+      .from('stores')
+      .update({ updated_at: new Date() })
+      .eq('email', userEmail);
+
+    return res.json({ success: true });
+
+  } catch (err) {
+    console.error("Reset Password Server Error:", err.message);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -291,7 +346,6 @@ async function saveOrder({ store_id, customer_name, phone_number, delivery_locat
     return { success: false, error: 'Incomplete user details provided.' };
   }
 
-  // Save order as 'unconfirmed' (Pending COD verification)
   const { data: orderData, error: orderError } = await supabase
     .from('orders')
     .insert([
@@ -519,7 +573,6 @@ CRITICAL TOOL CALLING INSTRUCTION:
 
       let orderReply = '';
       if (orderResult.success) {
-        // Feature 1: Prompt for "YES" reply to confirm Cash-On-Delivery
         orderReply = `Dhanyabad ${orderArgs.customer_name} hajur! Tapai ko order (Order ID: #${orderResult.order.id}) register bhayo. Order final confirm garna kripaya **YES** bhanera reply garnuhola.`;
       } else {
         orderReply = 'Hajur, order confirm garda kehi samasya aayo. Kripaya full name ra phone number punah check garera pathaunu hola.';
@@ -533,7 +586,6 @@ CRITICAL TOOL CALLING INSTRUCTION:
   const rawReply = responseMessage.content || '';
   const aiReply = cleanAiResponse(rawReply) || 'Hajur, kehi technical samasya aayo. Kripaya feri prayas garnuhos.';
   
-  // Flag chat as eligible for abandoned follow-up if customer drops off
   await saveChatMessage(store.id, senderPsid, 'assistant', aiReply, true);
 
   return aiReply;
@@ -585,14 +637,12 @@ async function handleCommentEvent(changeValue, pageOrIgId) {
 
     const token = store.facebook_page_access_token || process.env.META_ACCESS_TOKEN || '';
 
-    // Step A: Public reply on the comment
     await axios.post(`https://graph.facebook.com/v20.0/${commentId}/comments`, {
       message: 'Hajur check your DM! Sent you details 😊'
     }, {
       params: { access_token: token }
     });
 
-    // Step B: Send Private DM via Meta Private Replies API
     const dmReply = await processCustomerMessage(`Customer commented: "${commentText}". Provide price and availability details.`, senderPsid, store);
     
     await axios.post(`https://graph.facebook.com/v20.0/${commentId}/private_replies`, {
@@ -615,7 +665,6 @@ app.post('/api/orders/:id/dispatch', async (req, res) => {
   try {
     const orderId = req.params.id;
 
-    // Fetch order details
     const { data: order, error } = await supabase
       .from('orders')
       .select('*, stores(*)')
@@ -626,7 +675,6 @@ app.post('/api/orders/:id/dispatch', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Order not found.' });
     }
 
-    // Call Pathao Courier API
     const pathaoResponse = await axios.post(
       `${process.env.PATHAO_BASE_URL || 'https://api-hermes.pathao.com'}/aladdin/api/v1/orders`,
       {
@@ -650,7 +698,6 @@ app.post('/api/orders/:id/dispatch', async (req, res) => {
 
     const trackingId = pathaoResponse.data?.data?.consignment_id || `PTH-${Date.now()}`;
 
-    // Update order status in Supabase
     await supabase
       .from('orders')
       .update({
@@ -679,14 +726,12 @@ app.post('/api/orders/:id/dispatch', async (req, res) => {
    FEATURE 4: SMART ABANDONED CHAT RECOVERY (BACKGROUND CRON JOB)
    ========================================================================== */
 
-// Runs every hour to check for leads inactive for >4 hours
 cron.schedule('0 * * * *', async () => {
   console.log('⏰ Running Abandoned Chat Recovery Cron...');
 
   try {
     const fourHoursAgo = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
 
-    // Find chats needing follow-up
     const { data: abandonedChats, error } = await supabase
       .from('chat_messages')
       .select('*, stores(*)')
@@ -704,7 +749,6 @@ cron.schedule('0 * * * *', async () => {
 
       await sendTextMessage(chat.sender_psid, followUpMsg, token);
 
-      // Disable further follow-ups for this chat session
       await supabase
         .from('chat_messages')
         .update({ requires_followup: false })
@@ -956,7 +1000,6 @@ app.post('/webhook', async (req, res) => {
     for (const entry of body.entry || []) {
       const pageOrIgId = entry.id;
 
-      // Handle Comment Webhook Events
       if (entry.changes) {
         for (const change of entry.changes) {
           if (change.field === 'comments' || change.field === 'feed') {
@@ -1000,8 +1043,9 @@ app.post('/webhook', async (req, res) => {
     res.sendStatus(404);
   }
 });
+
 /* ==========================================================================
-   UNIFIED MULTI-CHANNEL INBOX ENDPOINTS
+   UNIFIED MULTI-CHANNEL INBOX ENDPOINTS (STRICTLY SCOPED)
    ========================================================================== */
 
 // Serve Inbox Page
@@ -1009,21 +1053,22 @@ app.get('/inbox', (req, res) => {
   res.sendFile(path.join(__dirname, 'inbox.html'));
 });
 
-// Fetch distinct conversation threads
+// Fetch distinct conversation threads for a specific store
 app.get('/api/inbox/conversations', async (req, res) => {
   try {
     const { store_id } = req.query;
-    
-    let query = supabase
-      .from('chat_messages')
-      .select('sender_psid, content, created_at, store_id')
-      .order('created_at', { ascending: false });
 
-    if (store_id) {
-      query = query.eq('store_id', store_id);
+    // Strict Guard: Return empty if store_id is invalid or missing
+    if (!store_id || store_id === 'undefined' || store_id === 'null') {
+      return res.json([]);
     }
 
-    const { data, error } = await query;
+    const { data, error } = await supabase
+      .from('chat_messages')
+      .select('sender_psid, content, created_at, store_id')
+      .eq('store_id', store_id)
+      .order('created_at', { ascending: false });
+
     if (error) throw error;
 
     // Deduplicate to get the latest message per customer thread
@@ -1047,16 +1092,21 @@ app.get('/api/inbox/conversations', async (req, res) => {
   }
 });
 
-// Fetch full thread history for a single customer
+// Fetch full thread history for a single customer scoped to store_id
 app.get('/api/inbox/messages', async (req, res) => {
   try {
-    const { sender_psid } = req.query;
+    const { sender_psid, store_id } = req.query;
+
     if (!sender_psid) return res.status(400).json({ error: 'sender_psid is required' });
+    if (!store_id || store_id === 'undefined' || store_id === 'null') {
+      return res.json([]);
+    }
 
     const { data, error } = await supabase
       .from('chat_messages')
       .select('role, content, created_at')
       .eq('sender_psid', sender_psid)
+      .eq('store_id', store_id)
       .order('created_at', { ascending: true });
 
     if (error) throw error;
@@ -1065,65 +1115,9 @@ app.get('/api/inbox/messages', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
 // Start Express Server
 const PORT = process.env.PORT || 3000;
-// Serve Reset Password Page
-app.get('/reset-password', (req, res) => {
-  res.sendFile(path.join(__dirname, 'reset-password.html'));
-});
-
-// Request Password Reset Link
-app.post('/api/request-password-reset', async (req, res) => {
-  try {
-    const { email } = req.body;
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: 'https://nepali-ai-sales-bot.onrender.com/reset-password',
-    });
-
-    if (error) throw error;
-    return res.json({ success: true });
-  } catch (err) {
-    return res.status(400).json({ success: false, error: err.message });
-  }
-});
-
-app.post('/api/update-password', async (req, res) => {
-  try {
-    const { accessToken, newPassword } = req.body;
-
-    if (!accessToken || !newPassword) {
-      return res.status(400).json({ success: false, error: 'Missing token or password.' });
-    }
-
-    // 1. Verify token & get user
-    const { data: userData, error: userError } = await supabase.auth.getUser(accessToken);
-    if (userError || !userData?.user) {
-      return res.status(401).json({ success: false, error: 'Link expired or invalid. Please request a new one.' });
-    }
-
-    const userId = userData.user.id;
-    const userEmail = userData.user.email;
-
-    // 2. Update Supabase Auth password using Admin Client
-    const { error: updateAuthError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
-      password: newPassword
-    });
-
-    if (updateAuthError) throw updateAuthError;
-
-    // 3. Update custom store record if password exists there
-    await supabase
-      .from('stores')
-      .update({ updated_at: new Date() })
-      .eq('email', userEmail);
-
-    return res.json({ success: true });
-
-  } catch (err) {
-    console.error("Reset Password Server Error:", err.message);
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
 app.listen(PORT, () => {
   console.log(`🚀 AI Sales Admin Server running on http://localhost:${PORT}`);
 });

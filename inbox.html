@@ -57,13 +57,19 @@
 
   <script>
     const urlParams = new URLSearchParams(window.location.search);
-    const storeId = urlParams.get('store_id');
+    // Primary: URL param | Fallback: localStorage
+    const storeId = urlParams.get('store_id') || localStorage.getItem('store_id');
     let activeSenderPsid = null;
 
     async function loadConversations() {
       try {
-        const endpoint = storeId ? `/api/inbox/conversations?store_id=${storeId}` : '/api/inbox/conversations';
-        const res = await fetch(endpoint);
+        if (!storeId) {
+          document.getElementById('conversations-list').innerHTML = 
+            '<div class="p-4 text-center text-xs text-amber-500">No active store session found. Please login.</div>';
+          return;
+        }
+
+        const res = await fetch(`/api/inbox/conversations?store_id=${encodeURIComponent(storeId)}`);
         const conversations = await res.json();
 
         const listEl = document.getElementById('conversations-list');
@@ -91,16 +97,24 @@
       document.getElementById('chat-user-id').innerText = `Customer ID: ${senderPsid}`;
       document.getElementById('chat-channel-type').innerText = `Omnichannel Customer Thread`;
 
-      loadConversations(); // refresh highlight state
+      loadConversations();
       loadMessages(senderPsid);
     }
 
     async function loadMessages(senderPsid) {
       try {
-        const res = await fetch(`/api/inbox/messages?sender_psid=${senderPsid}`);
+        if (!storeId || !senderPsid) return;
+
+        // Scoped message request including store_id
+        const res = await fetch(`/api/inbox/messages?sender_psid=${encodeURIComponent(senderPsid)}&store_id=${encodeURIComponent(storeId)}`);
         const messages = await res.json();
 
         const container = document.getElementById('messages-container');
+        if (!messages || messages.length === 0) {
+          container.innerHTML = '<div class="h-full flex items-center justify-center text-slate-600 text-sm">No message history found.</div>';
+          return;
+        }
+
         container.innerHTML = messages.map(msg => {
           const isUser = msg.role === 'user';
           return `
@@ -112,7 +126,7 @@
               }">
                 ${msg.content}
               </div>
-              <span class="text-[10px] text-slate-500 mt-1 px-1">${msg.role === 'user' ? 'Customer' : 'AI Assistant'}</span>
+              <span class="text-[10px] text-slate-500 mt-1 px-1">${isUser ? 'Customer' : 'AI Assistant'}</span>
             </div>
           `;
         }).join('');
