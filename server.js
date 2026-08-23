@@ -137,7 +137,7 @@ app.post('/api/login', async (req, res) => {
 
     const cleanEmail = String(email).trim().toLowerCase();
 
-    // 1. Fetch store profile by email
+    // 1. Fetch store by email
     const { data: store, error: storeError } = await supabaseAdmin
       .from('stores')
       .select('*')
@@ -148,11 +148,8 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid email or password.' });
     }
 
-    // 2. Ensure both values are strictly strings for bcrypt
-    const inputPassword = String(password);
-    const storedHashedPassword = String(store.password);
-
-    const isMatch = await bcrypt.compare(inputPassword, storedHashedPassword);
+    // 2. Compare entered password against stored bcrypt hash
+    const isMatch = await bcrypt.compare(String(password).trim(), String(store.password).trim());
 
     if (!isMatch) {
       return res.status(400).json({ success: false, error: 'Invalid email or password.' });
