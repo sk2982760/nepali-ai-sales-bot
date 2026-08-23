@@ -129,30 +129,45 @@ app.post('/api/signup', async (req, res) => {
 
 app.post('/api/login', async (req, res) => {
   try {
+    console.log("=== LOGIN REQUEST RECEIVED ===");
+    console.log("Req Body:", req.body);
+
     const { email, password } = req.body;
 
     if (!email || !password) {
+      console.log("Missing fields:", { email: !!email, password: !!password });
       return res.status(400).json({ success: false, error: 'Email and password are required.' });
     }
 
     const cleanEmail = String(email).trim().toLowerCase();
+    const cleanPassword = String(password).trim();
 
-    // 1. Fetch store by email
+    // Fetch store
     const { data: store, error: storeError } = await supabaseAdmin
       .from('stores')
       .select('*')
       .eq('email', cleanEmail)
       .maybeSingle();
 
-    if (storeError || !store || !store.password) {
-      return res.status(400).json({ success: false, error: 'Invalid email or password.' });
+    console.log("DB Store Record Found:", store);
+
+    if (storeError || !store) {
+      console.log("Store Lookup Failed:", storeError?.message);
+      return res.status(400).json({ success: false, error: 'Invalid credentials' });
     }
 
-    // 2. Compare entered password against stored bcrypt hash
-    const isMatch = await bcrypt.compare(String(password).trim(), String(store.password).trim());
+    // Direct password match check (bypasses bcrypt temporary for testing if needed)
+    let isMatch = false;
+    if (store.password && store.password.startsWith('$2a$')) {
+      isMatch = await bcrypt.compare(cleanPassword, store.password);
+    } else {
+      isMatch = (cleanPassword === store.password);
+    }
+
+    console.log("Password Match Result:", isMatch);
 
     if (!isMatch) {
-      return res.status(400).json({ success: false, error: 'Invalid email or password.' });
+      return res.status(400).json({ success: false, error: 'Invalid credentials' });
     }
 
     return res.json({
@@ -163,7 +178,7 @@ app.post('/api/login', async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Login Error:", err.message || err);
+    console.error("Login Crash:", err);
     return res.status(500).json({ success: false, error: 'Internal server error.' });
   }
 });

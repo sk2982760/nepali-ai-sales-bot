@@ -90,8 +90,8 @@
 <script>
   document.getElementById('loginForm').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const email = document.getElementById('email').value;
-    const password = document.getElementById('password').value;
+    const email = document.getElementById('email').value.trim();
+    const password = document.getElementById('password').value.trim();
 
     try {
       const res = await fetch('/api/login', {
@@ -101,9 +101,12 @@
       });
       const data = await res.json();
 
-      if (data.success && data.store_id) {
-        localStorage.setItem('store_id', data.store_id);
-        window.location.href = `/dashboard?store_id=${encodeURIComponent(data.store_id)}`;
+      // FIXED: Handles both storeId and store_id
+      const storeId = data.storeId || data.store_id;
+
+      if (data.success && storeId) {
+        localStorage.setItem('store_id', storeId);
+        window.location.href = `/dashboard?store_id=${encodeURIComponent(storeId)}`;
       } else {
         alert('Login Failed: ' + (data.error || 'Invalid credentials'));
       }
@@ -112,7 +115,6 @@
     }
   });
 
-  // FORGOT PASSWORD HANDLER ADDED HERE
   async function handleForgotPassword(e) {
     e.preventDefault();
     const email = prompt("Enter your registered email address to receive a password reset link:");
