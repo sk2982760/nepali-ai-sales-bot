@@ -847,7 +847,7 @@ async function saveStoreChannels(storeId, channels) {
    SOCIAL CHANNEL OAUTH CONNECT ROUTES (FACEBOOK & WHATSAPP)
    ========================================================================== */
 
-// 1. Facebook & Instagram OAuth Initiation Route
+// 1. Facebook & Instagram Connect Route
 app.get('/auth/facebook', (req, res) => {
   const storeId = req.query.store_id;
   if (!storeId) return res.status(400).send('Missing store_id parameter.');
@@ -868,7 +868,6 @@ app.get('/auth/facebook/callback', async (req, res) => {
   try {
     const redirectUri = `https://${req.get('host')}/auth/facebook/callback`;
     
-    // Exchange code for Page Token via Meta Graph API
     const tokenRes = await axios.get('https://graph.facebook.com/v20.0/oauth/access_token', {
       params: {
         client_id: process.env.META_APP_ID,
@@ -880,7 +879,6 @@ app.get('/auth/facebook/callback', async (req, res) => {
 
     const userToken = tokenRes.data.access_token;
     
-    // Fetch attached Page & Instagram details
     const pageRes = await axios.get('https://graph.facebook.com/v20.0/me/accounts', {
       params: { access_token: userToken, fields: 'id,name,access_token,instagram_business_account' }
     });
@@ -901,7 +899,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
   }
 });
 
-// 2. WhatsApp Business Connect Route
+// 2. WhatsApp Connect Route
 app.get('/auth/whatsapp', (req, res) => {
   const storeId = req.query.store_id;
   if (!storeId) return res.status(400).send('Missing store_id parameter.');
@@ -915,7 +913,6 @@ app.get('/auth/whatsapp', (req, res) => {
 });
 
 // WhatsApp Callback Handler
-// Complete WhatsApp Callback Handler
 app.get('/auth/whatsapp/callback', async (req, res) => {
   const { code, state: storeId } = req.query;
   if (!code || !storeId) return res.status(400).send('WhatsApp connection failed.');
