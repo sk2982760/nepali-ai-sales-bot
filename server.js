@@ -91,13 +91,13 @@ app.post('/api/signup', async (req, res) => {
       return res.status(400).json({ success: false, error: authError?.message || 'Auth signup failed.' });
     }
 
-    // 2. Insert into 'stores' table using supabaseAdmin (bypasses RLS)
+  // 2. Insert into 'stores' table with the correct 'store_name' column
     const { data: storeData, error: storeError } = await supabaseAdmin
       .from('stores')
       .insert([
         {
           id: authData.user.id,
-          name: storeName.trim(),
+          store_name: storeName.trim(), // Matches 'store_name' in your database
           email: cleanEmail,
         }
       ])
