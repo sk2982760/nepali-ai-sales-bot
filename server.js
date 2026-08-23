@@ -81,11 +81,11 @@ app.post('/api/signup', async (req, res) => {
 
     const cleanEmail = email.trim();
 
-    // 1. Create and auto-confirm user using admin client
+    // 1. Create and auto-confirm user via Admin API
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
       email: cleanEmail,
       password: password,
-      email_confirm: true // Automatically confirms the account
+      email_confirm: true
     });
 
     if (authError || !authData.user) {
@@ -95,31 +95,28 @@ app.post('/api/signup', async (req, res) => {
     // 2. Insert into 'stores' table
     const { data: storeData, error: storeError } = await supabaseAdmin
       .from('stores')
-      .insert([
-        {
-          id: authData.user.id,
-          store_name: storeName.trim(),
-          email: cleanEmail,
-        }
-      ])
+      .upsert(
+        [
+          {
+            id: authData.user.id,
+            store_name: storeName.trim(),
+            email: cleanEmail,
+          }
+        ],
+        { onConflict: 'email' }
+      )
       .select()
       .single();
 
     if (storeError) {
       console.error("Store Profile Creation Error:", storeError.message);
-      
-      // Delete orphaned user if store insertion fails
       await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
-
-      return res.status(500).json({ 
-        success: false, 
-        error: `Store creation failed: ${storeError.message}` 
-      });
+      return res.status(500).json({ success: false, error: `Store creation failed: ${storeError.message}` });
     }
 
     return res.json({
       success: true,
-      message: 'Account created and confirmed successfully!',
+      message: 'Account created successfully!',
       store: storeData,
       user: authData.user
     });
@@ -129,6 +126,7 @@ app.post('/api/signup', async (req, res) => {
     return res.status(500).json({ success: false, error: 'Internal server error.' });
   }
 });
+
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
