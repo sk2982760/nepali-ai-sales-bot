@@ -159,21 +159,26 @@ app.post('/api/login', async (req, res) => {
       .maybeSingle();
 
     // 3. Fallback: Auto-create store profile if missing
+// 3. Fallback: Auto-create or sync store profile safely
     if (!store) {
       const { data: newStore, error: createError } = await supabaseAdmin
         .from('stores')
-        .insert([
-          {
-            id: userId,
-            store_name: 'My Store',
-            email: cleanEmail,
-          }
-        ])
+        .upsert(
+          [
+            {
+              id: userId,
+              store_name: 'My Store',
+              email: cleanEmail,
+            }
+          ],
+          { onConflict: 'email' }
+        )
         .select()
         .single();
 
       if (createError) {
-        return res.status(500).json({ success: false, error: 'Failed to initialize store profile.' });
+        console.error("Store Auto-Creation Error Details:", createError);
+        return res.status(500).json({ success: false, error: `Failed to initialize store profile: ${createError.message}` });
       }
       store = newStore;
     }
