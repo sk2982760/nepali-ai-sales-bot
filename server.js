@@ -137,37 +137,56 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email and password are required.' });
     }
 
-    // 1. Authenticate credentials directly with Supabase Auth
+    const cleanEmail = email.trim();
+
+    // 1. Authenticate with Supabase Auth
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-      email: email.trim(),
-      password: password
+      email: cleanEmail,
+      password: password,
     });
 
-    if (authError) {
-      return res.status(400).json({ success: false, error: authError.message });
+    if (authError || !authData.user) {
+      return res.status(400).json({ success: false, error: authError?.message || 'Invalid credentials' });
     }
 
-    // 2. Fetch the store profile associated with this email
-    const { data: store, error: storeError } = await supabase
+    const userId = authData.user.id;
+
+    // 2. Fetch Store Profile by ID first, then by Email
+    let { data: store } = await supabaseAdmin
       .from('stores')
       .select('*')
-      .eq('email', email.trim())
-      .single();
+      .or(`id.eq.${userId},email.eq.${cleanEmail}`)
+      .maybeSingle();
 
-    if (storeError || !store) {
-      return res.status(404).json({ success: false, error: 'Store profile not found for this account.' });
+    // 3. Fallback: Auto-create store profile if missing
+    if (!store) {
+      const { data: newStore, error: createError } = await supabaseAdmin
+        .from('stores')
+        .insert([
+          {
+            id: userId,
+            store_name: 'My Store',
+            email: cleanEmail,
+          }
+        ])
+        .select()
+        .single();
+
+      if (createError) {
+        return res.status(500).json({ success: false, error: 'Failed to initialize store profile.' });
+      }
+      store = newStore;
     }
 
-    // 3. Set user session or return store details
     return res.json({
       success: true,
       storeId: store.id,
-      storeName: store.name,
+      storeName: store.store_name,
       user: authData.user
     });
 
   } catch (err) {
-    console.error("Login Error:", err.message);
+    console.error("Login Server Error:", err.message);
     return res.status(500).json({ success: false, error: 'Internal server error.' });
   }
 });
