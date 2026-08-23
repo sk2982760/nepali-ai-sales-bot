@@ -82,6 +82,8 @@ function cleanAiResponse(text) {
    SUPABASE AUTHENTICATION ENDPOINTS
    ========================================================================== */
 
+const bcrypt = require('bcryptjs');
+
 app.post('/api/signup', async (req, res) => {
   try {
     const { storeName, email, password } = req.body;
@@ -90,50 +92,37 @@ app.post('/api/signup', async (req, res) => {
       return res.status(400).json({ success: false, error: 'All fields are required.' });
     }
 
-    const cleanEmail = email.trim();
+    const cleanEmail = email.trim().toLowerCase();
 
-    // 1. Create and auto-confirm user via Admin API
-    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
-      email: cleanEmail,
-      password: password,
-      email_confirm: true
-    });
+    // 1. Hash the password
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    if (authError || !authData.user) {
-      return res.status(400).json({ success: false, error: authError?.message || 'Auth signup failed.' });
-    }
-
-    // 2. Insert into 'stores' table
-    const { data: storeData, error: storeError } = await supabaseAdmin
+    // 2. Insert directly into stores table
+    const { data: store, error: storeError } = await supabaseAdmin
       .from('stores')
-      .upsert(
-        [
-          {
-            id: authData.user.id,
-            store_name: storeName.trim(),
-            email: cleanEmail,
-          }
-        ],
-        { onConflict: 'email' }
-      )
+      .insert([
+        {
+          store_name: storeName.trim(),
+          email: cleanEmail,
+          password: hashedPassword
+        }
+      ])
       .select()
       .single();
 
     if (storeError) {
-      console.error("Store Profile Creation Error:", storeError.message);
-      await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
-      return res.status(500).json({ success: false, error: `Store creation failed: ${storeError.message}` });
+      console.error("Signup DB Error:", storeError.message);
+      return res.status(400).json({ success: false, error: 'Email already registered or database error.' });
     }
 
     return res.json({
       success: true,
       message: 'Account created successfully!',
-      store: storeData,
-      user: authData.user
+      store: store
     });
 
   } catch (err) {
-    console.error("Signup Endpoint Error:", err.message);
+    console.error("Signup Catch Error:", err);
     return res.status(500).json({ success: false, error: 'Internal server error.' });
   }
 });
@@ -146,49 +135,37 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email and password are required.' });
     }
 
-    const cleanEmail = email.trim();
+    const cleanEmail = email.trim().toLowerCase();
 
-    // 1. Re-initialize a fresh client or use auth directly to verify credentials
-    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-      email: cleanEmail,
-      password: password,
-    });
-
-    if (authError || !authData?.user) {
-      console.error("Auth Error:", authError?.message);
-      return res.status(400).json({ 
-        success: false, 
-        error: authError?.message || 'Invalid credentials' 
-      });
-    }
-
-    // 2. Query stores table using admin client to prevent RLS failures
+    // 1. Fetch store profile by email directly
     const { data: store, error: storeError } = await supabaseAdmin
       .from('stores')
       .select('*')
-      .eq('id', authData.user.id)
+      .eq('email', cleanEmail)
       .maybeSingle();
 
-    if (storeError) {
-      console.error("Store Lookup Error:", storeError.message);
-      return res.status(500).json({ success: false, error: 'Database error fetching store profile.' });
+    if (storeError || !store) {
+      return res.status(400).json({ success: false, error: 'Invalid email or password.' });
     }
 
-    if (!store) {
-      return res.status(404).json({ success: false, error: 'Store profile not found.' });
+    // 2. Compare hashed password
+    const isMatch = await bcrypt.compare(password, store.password);
+
+    if (!isMatch) {
+      return res.status(400).json({ success: false, error: 'Invalid email or password.' });
     }
 
+    // 3. Login successful
     return res.json({
       success: true,
       storeId: store.id,
       storeName: store.store_name,
-      user: authData.user,
-      session: authData.session
+      email: store.email
     });
 
   } catch (err) {
-    console.error("Login Server Error:", err);
-    return res.status(500).json({ success: false, error: err.message || 'Internal server error.' });
+    console.error("Login Error:", err);
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
   }
 });
 
