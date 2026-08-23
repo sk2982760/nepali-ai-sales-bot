@@ -137,26 +137,33 @@ app.post('/api/login', async (req, res) => {
 
     const cleanEmail = email.trim();
 
-    // 1. Authenticate with Supabase Auth
+    // 1. Re-initialize a fresh client or use auth directly to verify credentials
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
       password: password,
     });
 
-    if (authError || !authData.user) {
-      console.error("Auth Signin Error:", authError?.message);
-      return res.status(400).json({ success: false, error: authError?.message || 'Invalid credentials' });
+    if (authError || !authData?.user) {
+      console.error("Auth Error:", authError?.message);
+      return res.status(400).json({ 
+        success: false, 
+        error: authError?.message || 'Invalid credentials' 
+      });
     }
 
-    // 2. Fetch linked store profile
+    // 2. Query stores table using admin client to prevent RLS failures
     const { data: store, error: storeError } = await supabaseAdmin
       .from('stores')
       .select('*')
       .eq('id', authData.user.id)
-      .single();
+      .maybeSingle();
 
-    if (storeError || !store) {
-      console.error("Store Lookup Error:", storeError?.message);
+    if (storeError) {
+      console.error("Store Lookup Error:", storeError.message);
+      return res.status(500).json({ success: false, error: 'Database error fetching store profile.' });
+    }
+
+    if (!store) {
       return res.status(404).json({ success: false, error: 'Store profile not found.' });
     }
 
@@ -164,12 +171,13 @@ app.post('/api/login', async (req, res) => {
       success: true,
       storeId: store.id,
       storeName: store.store_name,
-      user: authData.user
+      user: authData.user,
+      session: authData.session
     });
 
   } catch (err) {
-    console.error("Login Server Error:", err.message);
-    return res.status(500).json({ success: false, error: 'Internal server error.' });
+    console.error("Login Server Error:", err);
+    return res.status(500).json({ success: false, error: err.message || 'Internal server error.' });
   }
 });
 
