@@ -135,27 +135,29 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email and password are required.' });
     }
 
-    const cleanEmail = email.trim().toLowerCase();
+    const cleanEmail = String(email).trim().toLowerCase();
 
-    // 1. Fetch store profile by email directly
+    // 1. Fetch store profile by email
     const { data: store, error: storeError } = await supabaseAdmin
       .from('stores')
       .select('*')
       .eq('email', cleanEmail)
       .maybeSingle();
 
-    if (storeError || !store) {
+    if (storeError || !store || !store.password) {
       return res.status(400).json({ success: false, error: 'Invalid email or password.' });
     }
 
-    // 2. Compare hashed password
-    const isMatch = await bcrypt.compare(password, store.password);
+    // 2. Ensure both values are strictly strings for bcrypt
+    const inputPassword = String(password);
+    const storedHashedPassword = String(store.password);
+
+    const isMatch = await bcrypt.compare(inputPassword, storedHashedPassword);
 
     if (!isMatch) {
       return res.status(400).json({ success: false, error: 'Invalid email or password.' });
     }
 
-    // 3. Login successful
     return res.json({
       success: true,
       storeId: store.id,
@@ -164,7 +166,7 @@ app.post('/api/login', async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Login Error:", err);
+    console.error("Login Error:", err.message || err);
     return res.status(500).json({ success: false, error: 'Internal server error.' });
   }
 });
