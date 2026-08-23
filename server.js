@@ -144,41 +144,20 @@ app.post('/api/login', async (req, res) => {
     });
 
     if (authError || !authData.user) {
+      console.error("Auth Signin Error:", authError?.message);
       return res.status(400).json({ success: false, error: authError?.message || 'Invalid credentials' });
     }
 
-    const userId = authData.user.id;
-
-    // 2. Fetch Store Profile by ID first, then by Email
-    let { data: store } = await supabaseAdmin
+    // 2. Fetch linked store profile
+    const { data: store, error: storeError } = await supabaseAdmin
       .from('stores')
       .select('*')
-      .or(`id.eq.${userId},email.eq.${cleanEmail}`)
-      .maybeSingle();
+      .eq('id', authData.user.id)
+      .single();
 
-    // 3. Fallback: Auto-create store profile if missing
-// 3. Fallback: Auto-create or sync store profile safely
-    if (!store) {
-      const { data: newStore, error: createError } = await supabaseAdmin
-        .from('stores')
-        .upsert(
-          [
-            {
-              id: userId,
-              store_name: 'My Store',
-              email: cleanEmail,
-            }
-          ],
-          { onConflict: 'email' }
-        )
-        .select()
-        .single();
-
-      if (createError) {
-        console.error("Store Auto-Creation Error Details:", createError);
-        return res.status(500).json({ success: false, error: `Failed to initialize store profile: ${createError.message}` });
-      }
-      store = newStore;
+    if (storeError || !store) {
+      console.error("Store Lookup Error:", storeError?.message);
+      return res.status(404).json({ success: false, error: 'Store profile not found.' });
     }
 
     return res.json({
