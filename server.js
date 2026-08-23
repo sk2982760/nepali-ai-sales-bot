@@ -133,31 +133,38 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email and password are required.' });
     }
 
+    // 1. Authenticate credentials directly with Supabase Auth
     const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
+      email: email.trim(),
+      password: password
     });
 
     if (authError) {
-      return res.status(401).json({ success: false, error: authError.message });
+      return res.status(400).json({ success: false, error: authError.message });
     }
 
-    const { data: storeData } = await supabase
+    // 2. Fetch the store profile associated with this email
+    const { data: store, error: storeError } = await supabase
       .from('stores')
       .select('*')
-      .eq('owner_id', authData.user.id)
-      .maybeSingle();
+      .eq('email', email.trim())
+      .single();
 
-    return res.status(200).json({
+    if (storeError || !store) {
+      return res.status(404).json({ success: false, error: 'Store profile not found for this account.' });
+    }
+
+    // 3. Set user session or return store details
+    return res.json({
       success: true,
-      session: authData.session,
-      user: authData.user,
-      store: storeData || null
+      storeId: store.id,
+      storeName: store.name,
+      user: authData.user
     });
 
   } catch (err) {
-    console.error('❌ Login Error:', err);
-    return res.status(500).json({ success: false, error: err.message || 'Internal server error.' });
+    console.error("Login Error:", err.message);
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
   }
 });
 
@@ -1070,23 +1077,36 @@ app.post('/api/update-password', async (req, res) => {
     const { accessToken, newPassword } = req.body;
 
     if (!accessToken || !newPassword) {
-      return res.status(400).json({ success: false, error: 'Access token or password missing.' });
+      return res.status(400).json({ success: false, error: 'Missing token or password.' });
     }
 
-    const { data, error: userError } = await supabase.auth.getUser(accessToken);
-    if (userError || !data || !data.user) {
-      return res.status(401).json({ success: false, error: 'Invalid or expired session link.' });
+    // 1. Verify token & get user
+    const { data: userData, error: userError } = await supabase.auth.getUser(accessToken);
+    if (userError || !userData?.user) {
+      return res.status(401).json({ success: false, error: 'Link expired or invalid. Please request a new one.' });
     }
 
-    const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(data.user.id, {
+    const userId = userData.user.id;
+    const userEmail = userData.user.email;
+
+    // 2. Update Supabase Auth password using Admin Client
+    const { error: updateAuthError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
       password: newPassword
     });
 
-    if (updateError) throw updateError;
+    if (updateAuthError) throw updateAuthError;
+
+    // 3. Update custom store record if password exists there
+    await supabase
+      .from('stores')
+      .update({ updated_at: new Date() })
+      .eq('email', userEmail);
+
     return res.json({ success: true });
+
   } catch (err) {
-    console.error("Password Update Error:", err.message);
-    return res.status(400).json({ success: false, error: err.message });
+    console.error("Reset Password Server Error:", err.message);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 app.listen(PORT, () => {
