@@ -76,52 +76,49 @@ app.post('/api/signup', async (req, res) => {
     const { storeName, email, password } = req.body;
 
     if (!storeName || !email || !password) {
-      return res.status(400).json({ success: false, error: 'Store name, email, and password are required.' });
+      return res.status(400).json({ success: false, error: 'All fields are required.' });
     }
 
+    const cleanEmail = email.trim();
+
+    // 1. Create user in Supabase Auth
     const { data: authData, error: authError } = await supabase.auth.signUp({
-      email,
-      password,
+      email: cleanEmail,
+      password: password,
     });
 
     if (authError) {
       return res.status(400).json({ success: false, error: authError.message });
     }
 
-    const userId = authData.user?.id;
-    if (!userId) {
-      return res.status(500).json({ success: false, error: 'Failed to retrieve user ID.' });
-    }
-
-    const slug = storeName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
-
+    // 2. Insert store record into the 'stores' database table
     const { data: storeData, error: storeError } = await supabase
       .from('stores')
       .insert([
         {
-          store_name: storeName.trim(),
-          slug: slug,
-          owner_id: userId
+          id: authData.user.id, // Linking Auth ID directly to Store ID
+          name: storeName.trim(),
+          email: cleanEmail,
         }
       ])
-      .select();
+      .select()
+      .single();
 
     if (storeError) {
-      console.error('Error creating store during signup:', storeError);
-      return res.status(500).json({ success: false, error: 'Account created, but store creation failed.' });
+      console.error("Store Profile Creation Error:", storeError.message);
+      return res.status(500).json({ success: false, error: 'User created, but store profile creation failed.' });
     }
 
-    return res.status(201).json({
+    return res.json({
       success: true,
-      message: 'Account and store created successfully!',
-      session: authData.session,
-      user: authData.user,
-      store: storeData[0]
+      message: 'Account and store profile created successfully!',
+      store: storeData,
+      user: authData.user
     });
 
   } catch (err) {
-    console.error('❌ Signup Error:', err);
-    return res.status(500).json({ success: false, error: err.message || 'Internal server error.' });
+    console.error("Signup Endpoint Error:", err.message);
+    return res.status(500).json({ success: false, error: 'Internal server error.' });
   }
 });
 
