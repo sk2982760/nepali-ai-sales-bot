@@ -852,7 +852,7 @@ app.get('/auth/facebook', (req, res) => {
   const storeId = req.query.store_id;
   if (!storeId) return res.status(400).send('Missing store_id parameter.');
 
-  const appId = process.env.FB_APP_ID;
+  const appId = process.env.META_APP_ID;
   const redirectUri = encodeURIComponent(`https://${req.get('host')}/auth/facebook/callback`);
   const scope = encodeURIComponent('pages_show_list,pages_messaging,pages_read_engagement,instagram_basic,instagram_manage_messages');
 
@@ -871,8 +871,8 @@ app.get('/auth/facebook/callback', async (req, res) => {
     // Exchange code for Page Token via Meta Graph API
     const tokenRes = await axios.get('https://graph.facebook.com/v20.0/oauth/access_token', {
       params: {
-        client_id: process.env.FB_APP_ID,
-        client_secret: process.env.FB_APP_SECRET,
+        client_id: process.env.META_APP_ID,
+        client_secret: process.env.META_APP_SECRET,
         redirect_uri: redirectUri,
         code: code
       }
@@ -906,7 +906,7 @@ app.get('/auth/whatsapp', (req, res) => {
   const storeId = req.query.store_id;
   if (!storeId) return res.status(400).send('Missing store_id parameter.');
 
-  const appId = process.env.FB_APP_ID;
+  const appId = process.env.META_APP_ID;
   const redirectUri = encodeURIComponent(`https://${req.get('host')}/auth/whatsapp/callback`);
   const scope = encodeURIComponent('whatsapp_business_management,whatsapp_business_messaging');
 
@@ -926,8 +926,8 @@ app.get('/auth/whatsapp/callback', async (req, res) => {
     // 1. Exchange code for Meta Access Token
     const tokenRes = await axios.get('https://graph.facebook.com/v20.0/oauth/access_token', {
       params: {
-        client_id: process.env.FB_APP_ID,
-        client_secret: process.env.FB_APP_SECRET,
+        client_id: process.env.META_APP_ID,
+        client_secret: process.env.META_APP_SECRET,
         redirect_uri: redirectUri,
         code: code
       }
