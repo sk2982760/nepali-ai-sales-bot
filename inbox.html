@@ -15,7 +15,7 @@
       <h1 class="text-lg font-bold tracking-tight">Unified Live Inbox</h1>
     </div>
     <div class="flex items-center space-x-4">
-      <a href="/dashboard" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg font-medium transition">Dashboard</a>
+      <a id="dashboard-nav-link" href="/dashboard" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg font-medium transition">Dashboard</a>
     </div>
   </nav>
 
@@ -61,11 +61,20 @@
     const storeId = urlParams.get('store_id') || localStorage.getItem('store_id');
     let activeSenderPsid = null;
 
+    // Dynamically update the Dashboard navigation link with the current store_id
+    if (storeId) {
+      localStorage.setItem('store_id', storeId); // Sync back to local storage
+      const dashLink = document.getElementById('dashboard-nav-link');
+      if (dashLink) {
+        dashLink.href = `/dashboard?store_id=${encodeURIComponent(storeId)}`;
+      }
+    }
+
     async function loadConversations() {
       try {
         if (!storeId) {
           document.getElementById('conversations-list').innerHTML = 
-            '<div class="p-4 text-center text-xs text-amber-500">No active store session found. Please login.</div>';
+            '<div class="p-4 text-center text-xs text-amber-500">No active store session found. Please pass ?store_id= in the URL.</div>';
           return;
         }
 

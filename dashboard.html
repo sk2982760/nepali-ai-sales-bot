@@ -18,7 +18,7 @@
       <div class="text-sm text-slate-400">
         Active Store: <span id="active-store-display" class="font-mono text-emerald-400">Loading...</span>
       </div>
-      <a href="/inbox" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-3 py-1.5 rounded transition flex items-center gap-1.5">
+      <a id="inbox-nav-link" href="/inbox" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-3 py-1.5 rounded transition flex items-center gap-1.5">
         💬 Live Inbox
       </a>
       <button onclick="handleLogout()" class="text-xs bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 px-3 py-1.5 rounded transition font-semibold">
@@ -46,6 +46,42 @@
       <div class="bg-slate-800/60 border border-slate-700/60 p-5 rounded-xl">
         <p class="text-xs font-semibold text-indigo-400 uppercase tracking-wider">Active Products</p>
         <h3 class="text-3xl font-extrabold text-indigo-400 mt-2" id="kpi-products">0</h3>
+      </div>
+    </section>
+
+    <!-- Channel Connections & Integrations Panel -->
+    <section class="bg-slate-800/40 border border-slate-700/60 rounded-xl p-5">
+      <h2 class="text-base font-bold text-white mb-1">Connected Sales Channels</h2>
+      <p class="text-xs text-slate-400 mb-4">Connect your social media pages to enable AI auto-replies and collect COD orders.</p>
+      
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- Facebook & Instagram Card -->
+        <div class="p-4 bg-slate-950/80 border border-slate-800 rounded-xl flex items-center justify-between">
+          <div class="flex items-center space-x-3">
+            <div class="h-10 w-10 bg-indigo-600/20 text-indigo-400 rounded-lg flex items-center justify-center font-bold text-lg">f</div>
+            <div>
+              <p class="text-sm font-bold text-slate-200">Facebook & Instagram</p>
+              <p class="text-xs text-slate-500">Connect Messenger and Instagram Direct</p>
+            </div>
+          </div>
+          <a id="auth-fb-link" href="/auth/facebook" class="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 font-semibold rounded-lg text-white transition">
+            Connect
+          </a>
+        </div>
+
+        <!-- WhatsApp Card -->
+        <div class="p-4 bg-slate-950/80 border border-slate-800 rounded-xl flex items-center justify-between">
+          <div class="flex items-center space-x-3">
+            <div class="h-10 w-10 bg-emerald-600/20 text-emerald-400 rounded-lg flex items-center justify-center font-bold text-sm">WA</div>
+            <div>
+              <p class="text-sm font-bold text-slate-200">WhatsApp Business</p>
+              <p class="text-xs text-slate-500">Connect WhatsApp Cloud API</p>
+            </div>
+          </div>
+          <a id="auth-wa-link" href="/auth/whatsapp" class="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 font-semibold rounded-lg text-white transition">
+            Connect
+          </a>
+        </div>
       </div>
     </section>
 
@@ -126,6 +162,18 @@
         return;
       }
 
+      // Sync active store ID to localStorage and update navigation links
+      localStorage.setItem('store_id', storeId);
+      
+      const inboxLink = document.getElementById('inbox-nav-link');
+      if (inboxLink) inboxLink.href = `/inbox?store_id=${encodeURIComponent(storeId)}`;
+
+      const authFbLink = document.getElementById('auth-fb-link');
+      if (authFbLink) authFbLink.href = `/auth/facebook?store_id=${encodeURIComponent(storeId)}`;
+
+      const authWaLink = document.getElementById('auth-wa-link');
+      if (authWaLink) authWaLink.href = `/auth/whatsapp?store_id=${encodeURIComponent(storeId)}`;
+
       try {
         const res = await fetch(`/api/dashboard?store_id=${encodeURIComponent(storeId)}`);
         const data = await res.json();
@@ -135,7 +183,6 @@
           return;
         }
 
-        localStorage.setItem('store_id', data.store.id);
         document.getElementById('active-store-display').textContent = `${data.store.store_name} (${data.store.id.substring(0, 8)}...)`;
 
         // Render Orders
