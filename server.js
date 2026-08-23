@@ -87,16 +87,16 @@ app.post('/api/signup', async (req, res) => {
       password: password,
     });
 
-    if (authError) {
-      return res.status(400).json({ success: false, error: authError.message });
+    if (authError || !authData.user) {
+      return res.status(400).json({ success: false, error: authError?.message || 'Auth signup failed.' });
     }
 
-    // 2. Insert store record into the 'stores' database table
-    const { data: storeData, error: storeError } = await supabase
+    // 2. Insert into 'stores' table using supabaseAdmin (bypasses RLS)
+    const { data: storeData, error: storeError } = await supabaseAdmin
       .from('stores')
       .insert([
         {
-          id: authData.user.id, // Linking Auth ID directly to Store ID
+          id: authData.user.id,
           name: storeName.trim(),
           email: cleanEmail,
         }
@@ -106,7 +106,14 @@ app.post('/api/signup', async (req, res) => {
 
     if (storeError) {
       console.error("Store Profile Creation Error:", storeError.message);
-      return res.status(500).json({ success: false, error: 'User created, but store profile creation failed.' });
+      
+      // Roll back: delete orphaned Auth user so the user can re-try registration cleanly
+      await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+
+      return res.status(500).json({ 
+        success: false, 
+        error: `Store creation failed: ${storeError.message}` 
+      });
     }
 
     return res.json({
