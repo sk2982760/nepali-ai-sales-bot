@@ -843,6 +843,126 @@ async function saveStoreChannels(storeId, channels) {
     }
   }
 }
+/* ==========================================================================
+   SOCIAL CHANNEL OAUTH CONNECT ROUTES (FACEBOOK & WHATSAPP)
+   ========================================================================== */
+
+// 1. Facebook & Instagram OAuth Initiation Route
+app.get('/auth/facebook', (req, res) => {
+  const storeId = req.query.store_id;
+  if (!storeId) return res.status(400).send('Missing store_id parameter.');
+
+  const appId = process.env.FB_APP_ID;
+  const redirectUri = encodeURIComponent(`https://${req.get('host')}/auth/facebook/callback`);
+  const scope = encodeURIComponent('pages_show_list,pages_messaging,pages_read_engagement,instagram_basic,instagram_manage_messages');
+
+  const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${storeId}`;
+  res.redirect(fbAuthUrl);
+});
+
+// Facebook Callback Handler
+app.get('/auth/facebook/callback', async (req, res) => {
+  const { code, state: storeId } = req.query;
+  if (!code || !storeId) return res.status(400).send('Authentication failed or store_id missing.');
+
+  try {
+    const redirectUri = `https://${req.get('host')}/auth/facebook/callback`;
+    
+    // Exchange code for Page Token via Meta Graph API
+    const tokenRes = await axios.get('https://graph.facebook.com/v20.0/oauth/access_token', {
+      params: {
+        client_id: process.env.FB_APP_ID,
+        client_secret: process.env.FB_APP_SECRET,
+        redirect_uri: redirectUri,
+        code: code
+      }
+    });
+
+    const userToken = tokenRes.data.access_token;
+    
+    // Fetch attached Page & Instagram details
+    const pageRes = await axios.get('https://graph.facebook.com/v20.0/me/accounts', {
+      params: { access_token: userToken, fields: 'id,name,access_token,instagram_business_account' }
+    });
+
+    const page = pageRes.data?.data?.[0];
+    if (page) {
+      await supabaseAdmin.from('stores').update({
+        facebook_page_id: page.id,
+        facebook_page_access_token: page.access_token,
+        instagram_account_id: page.instagram_business_account?.id || null
+      }).eq('id', storeId);
+    }
+
+    res.redirect(`/dashboard?store_id=${storeId}`);
+  } catch (err) {
+    console.error('FB Auth Error:', err.response?.data || err.message);
+    res.status(500).send('Failed to complete Facebook OAuth.');
+  }
+});
+
+// 2. WhatsApp Business Connect Route
+app.get('/auth/whatsapp', (req, res) => {
+  const storeId = req.query.store_id;
+  if (!storeId) return res.status(400).send('Missing store_id parameter.');
+
+  const appId = process.env.FB_APP_ID;
+  const redirectUri = encodeURIComponent(`https://${req.get('host')}/auth/whatsapp/callback`);
+  const scope = encodeURIComponent('whatsapp_business_management,whatsapp_business_messaging');
+
+  const waAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${storeId}`;
+  res.redirect(waAuthUrl);
+});
+
+// WhatsApp Callback Handler
+// Complete WhatsApp Callback Handler
+app.get('/auth/whatsapp/callback', async (req, res) => {
+  const { code, state: storeId } = req.query;
+  if (!code || !storeId) return res.status(400).send('WhatsApp connection failed.');
+
+  try {
+    const redirectUri = `https://${req.get('host')}/auth/whatsapp/callback`;
+
+    // 1. Exchange code for Meta Access Token
+    const tokenRes = await axios.get('https://graph.facebook.com/v20.0/oauth/access_token', {
+      params: {
+        client_id: process.env.FB_APP_ID,
+        client_secret: process.env.FB_APP_SECRET,
+        redirect_uri: redirectUri,
+        code: code
+      }
+    });
+
+    const userToken = tokenRes.data.access_token;
+
+    // 2. Fetch WhatsApp Business Accounts linked to user
+    const waAccountRes = await axios.get('https://graph.facebook.com/v20.0/me/whatsapp_business_accounts', {
+      params: { access_token: userToken }
+    });
+
+    const wabaId = waAccountRes.data?.data?.[0]?.id;
+
+    if (wabaId) {
+      // 3. Fetch Phone Number ID inside WABA
+      const phoneRes = await axios.get(`https://graph.facebook.com/v20.0/${wabaId}/phone_numbers`, {
+        params: { access_token: userToken }
+      });
+
+      const phoneNumId = phoneRes.data?.data?.[0]?.id;
+
+      // 4. Save to Database
+      await supabaseAdmin.from('stores').update({
+        whatsapp_phone_number_id: phoneNumId,
+        whatsapp_access_token: userToken
+      }).eq('id', storeId);
+    }
+
+    res.redirect(`/dashboard?store_id=${storeId}`);
+  } catch (err) {
+    console.error('WhatsApp Auth Error:', err.response?.data || err.message);
+    res.status(500).send('Failed to complete WhatsApp OAuth.');
+  }
+});
 
 app.post('/api/connect-all-channels', async (req, res) => {
   try {
