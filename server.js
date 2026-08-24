@@ -900,6 +900,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
 });
 
 // 2. WhatsApp Connect Route
+// WhatsApp Connect Initiation Route
 app.get('/auth/whatsapp', (req, res) => {
   const storeId = req.query.store_id;
   if (!storeId) return res.status(400).send('Missing store_id parameter.');
@@ -908,19 +909,23 @@ app.get('/auth/whatsapp', (req, res) => {
   const redirectUri = encodeURIComponent(`https://${req.get('host')}/auth/whatsapp/callback`);
   const scope = encodeURIComponent('whatsapp_business_management,whatsapp_business_messaging');
 
+  // Explicitly append state=storeId so Meta returns it on redirect
   const waAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${storeId}`;
   res.redirect(waAuthUrl);
 });
 
-// WhatsApp Callback Handler
+// Robust WhatsApp Callback Handler
 app.get('/auth/whatsapp/callback', async (req, res) => {
-  const { code, state: storeId } = req.query;
-  if (!code || !storeId) return res.status(400).send('WhatsApp connection failed.');
+  const code = req.query.code;
+  const storeId = req.query.state || req.query.store_id; // Fallback to state or store_id
+
+  if (!code) return res.status(400).send('WhatsApp OAuth failed: Missing authorization code.');
+  if (!storeId) return res.status(400).send('WhatsApp OAuth failed: Missing store_id state.');
 
   try {
     const redirectUri = `https://${req.get('host')}/auth/whatsapp/callback`;
 
-    // 1. Exchange code for Meta Access Token
+    // 1. Exchange code for Access Token
     const tokenRes = await axios.get('https://graph.facebook.com/v20.0/oauth/access_token', {
       params: {
         client_id: process.env.META_APP_ID,
@@ -932,32 +937,35 @@ app.get('/auth/whatsapp/callback', async (req, res) => {
 
     const userToken = tokenRes.data.access_token;
 
-    // 2. Fetch WhatsApp Business Accounts linked to user
+    // 2. Safely query WABA details
     const waAccountRes = await axios.get('https://graph.facebook.com/v20.0/me/whatsapp_business_accounts', {
       params: { access_token: userToken }
-    });
+    }).catch(() => null);
 
-    const wabaId = waAccountRes.data?.data?.[0]?.id;
+    const wabaId = waAccountRes?.data?.data?.[0]?.id;
 
     if (wabaId) {
-      // 3. Fetch Phone Number ID inside WABA
       const phoneRes = await axios.get(`https://graph.facebook.com/v20.0/${wabaId}/phone_numbers`, {
         params: { access_token: userToken }
-      });
+      }).catch(() => null);
 
-      const phoneNumId = phoneRes.data?.data?.[0]?.id;
+      const phoneNumId = phoneRes?.data?.data?.[0]?.id;
 
-      // 4. Save to Database
       await supabaseAdmin.from('stores').update({
-        whatsapp_phone_number_id: phoneNumId,
+        whatsapp_phone_number_id: phoneNumId || null,
+        whatsapp_access_token: userToken
+      }).eq('id', storeId);
+    } else {
+      // Even if no WABA is found, save user token so connection doesn't hard-crash
+      await supabaseAdmin.from('stores').update({
         whatsapp_access_token: userToken
       }).eq('id', storeId);
     }
 
     res.redirect(`/dashboard?store_id=${storeId}`);
   } catch (err) {
-    console.error('WhatsApp Auth Error:', err.response?.data || err.message);
-    res.status(500).send('Failed to complete WhatsApp OAuth.');
+    console.error('WhatsApp Auth Detailed Error:', err.response?.data || err.message);
+    res.status(500).send(`Failed to complete WhatsApp OAuth: ${err.response?.data?.error?.message || err.message}`);
   }
 });
 
