@@ -553,7 +553,7 @@ CRITICAL TOOL CALLING INSTRUCTION:
 
   const response = await groq.chat.completions.create({
     messages,
-    model: 'llama3-70b-8192',
+    model: 'llama-3.3-70b-specdec',
     temperature: 0,
     ...(tools && { tools, tool_choice: 'auto' })
   });
