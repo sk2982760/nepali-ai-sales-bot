@@ -553,7 +553,7 @@ CRITICAL TOOL CALLING INSTRUCTION:
 
   const response = await groq.chat.completions.create({
     messages,
-    model: 'llama-3.3-70b-specdec',
+    model: 'openai/gpt-oss-120b',
     temperature: 0,
     ...(tools && { tools, tool_choice: 'auto' })
   });
