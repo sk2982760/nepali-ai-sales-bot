@@ -1174,7 +1174,9 @@ app.post('/webhook', async (req, res) => {
    ========================================================================== */
 
 // Serve Inbox Page
+// Serve Inbox Page without caching
 app.get('/inbox', (req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.sendFile(path.join(__dirname, 'inbox.html'));
 });
 
