@@ -1271,19 +1271,19 @@ app.post('/api/inbox/reply', async (req, res) => {
       }
     );
 
-    // 3. Save agent reply in Supabase chat history table
-    await supabase.from('conversations').insert({
+    // 3. Save agent reply in 'chat_messages' table (Matching /inbox endpoints schema)
+    await supabase.from('chat_messages').insert({
       store_id: store_id,
-      customer_id: customer_id,
-      sender: 'agent', // Mark sender as human agent
-      message_text: message_text,
+      sender_psid: customer_id,
+      role: 'agent', // Sets role to 'agent' so UI displays green bubble
+      content: message_text,
       created_at: new Date().toISOString()
     });
 
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (err) {
     console.error('Manual Reply Error:', err.response?.data || err.message);
-    res.status(500).json({ error: err.response?.data?.error?.message || 'Failed to send message.' });
+    return res.status(500).json({ error: err.response?.data?.error?.message || 'Failed to send message.' });
   }
 });
 // Start Express Server
