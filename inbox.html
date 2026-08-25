@@ -37,7 +37,7 @@
     <div class="flex-1 flex flex-col bg-slate-900">
       
       <!-- Thread Header -->
-      <div id="chat-header" class="p-4 border-b border-slate-800 bg-slate-950/30 flex justify-between items-center">
+      <div id="chat-header" class="p-4 border-b border-slate-800 bg-slate-950/30 flex justify-between items-center shrink-0">
         <div>
           <h3 id="chat-user-id" class="font-bold text-slate-200">Select a conversation</h3>
           <p id="chat-channel-type" class="text-xs text-slate-500">Click any user on the left to view messages</p>
@@ -51,19 +51,37 @@
         </div>
       </div>
 
+      <!-- Manual Input Bar -->
+      <div class="p-4 border-t border-slate-800 bg-slate-950 flex items-center gap-3 shrink-0">
+        <input 
+          type="text" 
+          id="manual-message-input" 
+          placeholder="Type a manual reply to take over..." 
+          class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+          disabled
+          onkeypress="if(event.key === 'Enter') sendManualReply()"
+        />
+        <button 
+          id="send-reply-btn"
+          onclick="sendManualReply()" 
+          disabled
+          class="bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-semibold text-sm px-5 py-2.5 rounded-lg transition"
+        >
+          Send
+        </button>
+      </div>
+
     </div>
 
   </div>
 
   <script>
     const urlParams = new URLSearchParams(window.location.search);
-    // Primary: URL param | Fallback: localStorage
     const storeId = urlParams.get('store_id') || localStorage.getItem('store_id');
     let activeSenderPsid = null;
 
-    // Dynamically update the Dashboard navigation link with the current store_id
     if (storeId) {
-      localStorage.setItem('store_id', storeId); // Sync back to local storage
+      localStorage.setItem('store_id', storeId);
       const dashLink = document.getElementById('dashboard-nav-link');
       if (dashLink) {
         dashLink.href = `/dashboard?store_id=${encodeURIComponent(storeId)}`;
@@ -106,6 +124,10 @@
       document.getElementById('chat-user-id').innerText = `Customer ID: ${senderPsid}`;
       document.getElementById('chat-channel-type').innerText = `Omnichannel Customer Thread`;
 
+      // Enable input field and button when a thread is selected
+      document.getElementById('manual-message-input').disabled = false;
+      document.getElementById('send-reply-btn').disabled = false;
+
       loadConversations();
       loadMessages(senderPsid);
     }
@@ -114,7 +136,6 @@
       try {
         if (!storeId || !senderPsid) return;
 
-        // Scoped message request including store_id
         const res = await fetch(`/api/inbox/messages?sender_psid=${encodeURIComponent(senderPsid)}&store_id=${encodeURIComponent(storeId)}`);
         const messages = await res.json();
 
@@ -126,16 +147,24 @@
 
         container.innerHTML = messages.map(msg => {
           const isUser = msg.role === 'user';
+          const isAgent = msg.role === 'agent';
+          
+          let senderLabel = 'AI Assistant';
+          if (isUser) senderLabel = 'Customer';
+          if (isAgent) senderLabel = 'Human Agent';
+
           return `
             <div class="flex flex-col ${isUser ? 'items-start' : 'items-end'}">
               <div class="max-w-md px-4 py-2.5 rounded-2xl text-sm ${
                 isUser 
                   ? 'bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700/50' 
-                  : 'bg-indigo-600 text-white rounded-tr-none'
+                  : isAgent 
+                    ? 'bg-emerald-600 text-white rounded-tr-none' 
+                    : 'bg-indigo-600 text-white rounded-tr-none'
               }">
                 ${msg.content}
               </div>
-              <span class="text-[10px] text-slate-500 mt-1 px-1">${isUser ? 'Customer' : 'AI Assistant'}</span>
+              <span class="text-[10px] text-slate-500 mt-1 px-1">${senderLabel}</span>
             </div>
           `;
         }).join('');
@@ -146,7 +175,41 @@
       }
     }
 
-    // Initial Load & Auto-Refresh Every 5 Seconds
+    async function sendManualReply() {
+      const input = document.getElementById('manual-message-input');
+      const message = input.value.trim();
+      
+      if (!message || !activeSenderPsid || !storeId) return;
+
+      input.disabled = true;
+
+      try {
+        const res = await fetch('/api/inbox/reply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            store_id: storeId,
+            customer_id: activeSenderPsid,
+            message_text: message
+          })
+        });
+
+        const result = await res.json();
+        if (result.success) {
+          input.value = '';
+          await loadMessages(activeSenderPsid);
+          loadConversations();
+        } else {
+          alert('Failed to send message: ' + (result.error || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Network error sending message.');
+      } finally {
+        input.disabled = false;
+        input.focus();
+      }
+    }
+
     loadConversations();
     setInterval(() => {
       loadConversations();

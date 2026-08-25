@@ -1240,7 +1240,52 @@ app.get('/api/inbox/messages', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+app.post('/api/inbox/reply', async (req, res) => {
+  const { store_id, customer_id, message_text } = req.body;
 
+  if (!store_id || !customer_id || !message_text) {
+    return res.status(400).json({ error: 'Missing required parameters.' });
+  }
+
+  try {
+    // 1. Fetch Store details to get Facebook Page Access Token
+    const { data: store, error: storeErr } = await supabase
+      .from('stores')
+      .select('facebook_page_access_token')
+      .eq('id', store_id)
+      .single();
+
+    if (storeErr || !store?.facebook_page_access_token) {
+      return res.status(400).json({ error: 'Facebook token not found for store.' });
+    }
+
+    // 2. Send message to Facebook Messenger via Graph API
+    await axios.post(
+      `https://graph.facebook.com/v20.0/me/messages`,
+      {
+        recipient: { id: customer_id },
+        message: { text: message_text }
+      },
+      {
+        params: { access_token: store.facebook_page_access_token }
+      }
+    );
+
+    // 3. Save agent reply in Supabase chat history table
+    await supabase.from('conversations').insert({
+      store_id: store_id,
+      customer_id: customer_id,
+      sender: 'agent', // Mark sender as human agent
+      message_text: message_text,
+      created_at: new Date().toISOString()
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Manual Reply Error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data?.error?.message || 'Failed to send message.' });
+  }
+});
 // Start Express Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
