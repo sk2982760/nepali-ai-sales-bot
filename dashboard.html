@@ -144,7 +144,7 @@
 
   </main>
 
-  <script>
+<script>
     function getActiveStoreId() {
       const urlParams = new URLSearchParams(window.location.search);
       const urlStoreId = urlParams.get('store_id');
@@ -184,6 +184,25 @@
         }
 
         document.getElementById('active-store-display').textContent = `${data.store.store_name} (${data.store.id.substring(0, 8)}...)`;
+
+        // UPDATE CHANNEL CONNECTION BUTTONS BASED ON STORE DATA
+        if (data.store.facebook_page_id) {
+          const fbLink = document.getElementById('auth-fb-link');
+          if (fbLink) {
+            fbLink.innerText = 'Connected ✓';
+            fbLink.className = 'px-3 py-1.5 text-xs bg-emerald-600/20 text-emerald-400 font-semibold rounded-lg border border-emerald-500/30 cursor-default';
+            fbLink.removeAttribute('href');
+          }
+        }
+
+        if (data.store.whatsapp_phone_number_id) {
+          const waLink = document.getElementById('auth-wa-link');
+          if (waLink) {
+            waLink.innerText = 'Connected ✓';
+            waLink.className = 'px-3 py-1.5 text-xs bg-emerald-600/20 text-emerald-400 font-semibold rounded-lg border border-emerald-500/30 cursor-default';
+            waLink.removeAttribute('href');
+          }
+        }
 
         // Render Orders
         const ordersTbody = document.getElementById('orders-table-body');
