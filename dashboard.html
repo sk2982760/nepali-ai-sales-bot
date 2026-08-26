@@ -121,6 +121,9 @@
     <section class="bg-slate-800/40 border border-slate-700/60 rounded-xl overflow-hidden">
       <div class="p-5 border-b border-slate-700/60 flex justify-between items-center">
         <h2 class="text-lg font-bold text-white">Product Inventory Catalog</h2>
+        <button onclick="openProductModal()" class="bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs px-3 py-2 rounded-lg transition">
+          + Add Product
+        </button>
       </div>
 
       <div class="overflow-x-auto">
@@ -144,13 +147,89 @@
 
   </main>
 
-<script>
+  <!-- Add Product Modal -->
+  <div id="product-modal" class="hidden fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
+    <div class="bg-slate-900 border border-slate-800 rounded-xl p-6 w-full max-w-md shadow-2xl">
+      <h3 class="text-base font-bold text-white mb-4">Add New Product</h3>
+      <form id="add-product-form" onsubmit="handleCreateProduct(event)" class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold text-slate-400 mb-1">Product Title</label>
+          <input type="text" id="prod-name" required placeholder="e.g. Black Oversized Hoodie" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1">Price (NPR)</label>
+            <input type="number" id="prod-price" required placeholder="2500" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+          </div>
+          <div>
+            <label class="block text-xs font-semibold text-slate-400 mb-1">Stock Quantity</label>
+            <input type="number" id="prod-stock" required placeholder="15" class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500">
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-slate-400 mb-1">Description / Variants</label>
+          <textarea id="prod-desc" rows="2" placeholder="Available in M, L, XL sizes." class="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"></textarea>
+        </div>
+        <div class="flex justify-end space-x-2 pt-2">
+          <button type="button" onclick="closeProductModal()" class="px-4 py-2 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700">Cancel</button>
+          <button type="submit" class="px-4 py-2 text-xs bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-500">Save Product</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
     function getActiveStoreId() {
       const urlParams = new URLSearchParams(window.location.search);
       const urlStoreId = urlParams.get('store_id');
       if (urlStoreId) return urlStoreId;
 
       return localStorage.getItem('store_id');
+    }
+
+    function openProductModal() { 
+      document.getElementById('product-modal').classList.remove('hidden'); 
+    }
+
+    function closeProductModal() { 
+      document.getElementById('product-modal').classList.add('hidden'); 
+    }
+
+    async function handleCreateProduct(e) {
+      e.preventDefault();
+      const storeId = getActiveStoreId();
+
+      if (!storeId) {
+        alert('Missing active store session. Please log in again.');
+        return;
+      }
+      
+      const payload = {
+        store_id: storeId,
+        name: document.getElementById('prod-name').value,
+        price: parseFloat(document.getElementById('prod-price').value),
+        stock_quantity: parseInt(document.getElementById('prod-stock').value),
+        description: document.getElementById('prod-desc').value
+      };
+
+      try {
+        const res = await fetch('/api/products', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (data.success) {
+          closeProductModal();
+          document.getElementById('add-product-form').reset();
+          loadDashboardData();
+        } else {
+          alert('Error adding product: ' + (data.error || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Failed to save product. Check server connection.');
+      }
     }
 
     async function loadDashboardData() {
@@ -257,18 +336,24 @@
         // Render Products
         const productsTbody = document.getElementById('products-table-body');
         if (data.products && data.products.length > 0) {
-          productsTbody.innerHTML = data.products.map(p => `
-            <tr class="hover:bg-slate-800/50 transition">
-              <td class="p-4 font-semibold text-white">${p.title}</td>
-              <td class="p-4 font-mono text-emerald-400">NPR ${(p.price_npr || 0).toLocaleString()}</td>
-              <td class="p-4 font-bold ${p.stock_quantity > 0 ? 'text-indigo-400' : 'text-rose-400'}">${p.stock_quantity} remaining</td>
-              <td class="p-4">
-                <span class="px-2.5 py-1 text-xs rounded-full font-semibold ${p.stock_quantity > 0 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">
-                  ${p.stock_quantity > 0 ? 'In Stock' : 'Out of Stock'}
-                </span>
-              </td>
-            </tr>
-          `).join('');
+          productsTbody.innerHTML = data.products.map(p => {
+            const title = p.name || p.title || 'Untitled Product';
+            const price = p.price !== undefined ? p.price : (p.price_npr || 0);
+            const stock = p.stock_quantity !== undefined ? p.stock_quantity : 0;
+
+            return `
+              <tr class="hover:bg-slate-800/50 transition">
+                <td class="p-4 font-semibold text-white">${title}</td>
+                <td class="p-4 font-mono text-emerald-400">NPR ${Number(price).toLocaleString()}</td>
+                <td class="p-4 font-bold ${stock > 0 ? 'text-indigo-400' : 'text-rose-400'}">${stock} remaining</td>
+                <td class="p-4">
+                  <span class="px-2.5 py-1 text-xs rounded-full font-semibold ${stock > 0 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">
+                    ${stock > 0 ? 'In Stock' : 'Out of Stock'}
+                  </span>
+                </td>
+              </tr>
+            `;
+          }).join('');
 
           document.getElementById('kpi-products').textContent = data.products.length;
         } else {

@@ -290,9 +290,8 @@ async function getStoreByPlatformId({ whatsappPhoneId, facebookPageId, instagram
 async function getStoreInventory(storeId) {
   const { data, error } = await supabase
     .from('products')
-    .select('id, title, price_npr, stock_quantity')
-    .eq('store_id', storeId)
-    .gt('stock_quantity', 0);
+    .select('id, title, name, price_npr, price, stock_quantity, description')
+    .eq('store_id', storeId);
 
   if (error) {
     console.error(`Error fetching products for store ${storeId}:`, error);
@@ -300,11 +299,17 @@ async function getStoreInventory(storeId) {
   }
 
   if (!data || data.length === 0) {
-    return 'Currently all items are out of stock.';
+    return 'Currently no items available in catalog.';
   }
 
   return data
-    .map(p => `- ${p.title}: NPR ${p.price_npr} (${p.stock_quantity} items available) [ID: ${p.id}]`)
+    .map(p => {
+      const title = p.name || p.title || 'Product';
+      const price = p.price !== undefined ? p.price : (p.price_npr || 0);
+      const stock = p.stock_quantity !== undefined ? p.stock_quantity : 0;
+      const desc = p.description ? ` (${p.description})` : '';
+      return `- ${title}: NPR ${price} | Stock: ${stock}${desc} [ID: ${p.id}]`;
+    })
     .join('\n');
 }
 
@@ -472,9 +477,25 @@ EXAMPLES:
 }
 
 async function processCustomerMessage(userMessage, senderPsid, store) {
-  const inventoryList = await getStoreInventory(store.id);
-  const chatHistory = await getChatHistory(store.id, senderPsid);
+  // 1. Fetch current product catalog for this store from Supabase
+  const { data: products } = await supabase
+    .from('products')
+    .select('*')
+    .eq('store_id', store.id);
 
+  // 2. Format catalog into readable text for the AI
+  let inventoryContext = "No products available in the catalog currently.";
+  if (products && products.length > 0) {
+    inventoryContext = products.map(p => {
+      const title = p.name || p.title || 'Product';
+      const price = p.price !== undefined ? p.price : (p.price_npr || 0);
+      const stock = p.stock_quantity !== undefined ? p.stock_quantity : 0;
+      const desc = p.description ? ` (${p.description})` : '';
+      return `- ${title}: NPR ${price} | Stock: ${stock}${desc}`;
+    }).join('\n');
+  }
+
+  const chatHistory = await getChatHistory(store.id, senderPsid);
   const lowerMsg = userMessage.toLowerCase().trim();
 
   /* --------------------------------------------------------------------------
@@ -516,32 +537,32 @@ async function processCustomerMessage(userMessage, senderPsid, store) {
 
   const shouldDisableTools = isOrderAlreadyConfirmed || orderDeclinedOrDelayed || isSimpleAck;
 
-  const systemPrompt = `
-You are a polite, natural, and helpful sales assistant for "${store.store_name}" in Kathmandu, Nepal.
+  // 3. Inject inventory context directly into System Prompt
+  const systemPrompt = `You are a polite, natural, and helpful sales assistant for "${store.store_name || 'our shop'}" in Kathmandu, Nepal.
 
-STORE LIVE INVENTORY:
-${inventoryList}
+CURRENT LIVE INVENTORY:
+${inventoryContext}
 
 STRICT GRAMMAR & LANGUAGE DIRECTIVES:
 - Speak strictly in clear, natural Romanized Nepali (Aadarthi Bhasa).
 - Maintain short, concise sentences (1-2 sentences maximum).
 - FORBIDDEN WORDS/PHRASES: NEVER use "pasand", "pasand aaucha", "koi", "aur", "sath", "chahiye", "karne sakchu", "puchnu".
 - MANDATORY PHRASING:
-  * Greeting: "Namaste hajur! ${store.store_name} ma swagat chha."
+  * Greeting: "Namaste hajur! ${store.store_name || 'our shop'} ma swagat chha."
   * "Do you like this?": "Yo tapai lai mann parchha ki?"
   * "No problem": "Hajur, kehi xaina."
   * "Whenever you decide": "Hajur le decide garepachhi khabar garnuhola hai."
 
 UPSELLING & REJECTION RULES:
-1. If an item is NOT in stock, state it clearly: "Hajur, [item] ta aile stock ma chhaina."
-2. You may suggest a similar item ONCE.
-3. CRITICAL: If the customer insists on an out-of-stock item/color or declines an alternative, DO NOT PITCH ANY MORE PRODUCTS!
+1. Refer strictly to the CURRENT LIVE INVENTORY when answering pricing, stock, or product inquiries.
+2. If an item is NOT in stock (Stock: 0), state it clearly: "Hajur, [item] ta aile stock ma chhaina."
+3. You may suggest a similar item ONCE.
+4. CRITICAL: If the customer insists on an out-of-stock item/color or declines an alternative, DO NOT PITCH ANY MORE PRODUCTS!
    - Reply gracefully: "Hajur, bujhe. Stock aune bittikai tapai lai khabar garnechhaum hai! Dhanyabad."
 
 CRITICAL TOOL CALLING INSTRUCTION:
 - DO NOT call saveOrder when the user says "Huss", "Paxi garxu", "Decide garera", "Haina pardaina", "Thank you", or asks a general question.
-- Call saveOrder ONLY when the customer explicitly provides their Name, Phone Number, and Address with direct intent to place the order now.
-`;
+- Call saveOrder ONLY when the customer explicitly provides their Name, Phone Number, and Address with direct intent to place the order now.`;
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -843,6 +864,7 @@ async function saveStoreChannels(storeId, channels) {
     }
   }
 }
+
 /* ==========================================================================
    SOCIAL CHANNEL OAUTH CONNECT ROUTES (FACEBOOK & WHATSAPP)
    ========================================================================== */
@@ -899,8 +921,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
   }
 });
 
-// 2. WhatsApp Connect Route
-// WhatsApp Connect Initiation Route
+// 2. WhatsApp Connect Initiation Route
 app.get('/auth/whatsapp', (req, res) => {
   const storeId = req.query.store_id;
   if (!storeId) return res.status(400).send('Missing store_id parameter.');
@@ -909,7 +930,6 @@ app.get('/auth/whatsapp', (req, res) => {
   const redirectUri = encodeURIComponent(`https://${req.get('host')}/auth/whatsapp/callback`);
   const scope = encodeURIComponent('whatsapp_business_management,whatsapp_business_messaging');
 
-  // Explicitly append state=storeId so Meta returns it on redirect
   const waAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${storeId}`;
   res.redirect(waAuthUrl);
 });
@@ -917,7 +937,7 @@ app.get('/auth/whatsapp', (req, res) => {
 // Robust WhatsApp Callback Handler
 app.get('/auth/whatsapp/callback', async (req, res) => {
   const code = req.query.code;
-  const storeId = req.query.state || req.query.store_id; // Fallback to state or store_id
+  const storeId = req.query.state || req.query.store_id;
 
   if (!code) return res.status(400).send('WhatsApp OAuth failed: Missing authorization code.');
   if (!storeId) return res.status(400).send('WhatsApp OAuth failed: Missing store_id state.');
@@ -925,7 +945,6 @@ app.get('/auth/whatsapp/callback', async (req, res) => {
   try {
     const redirectUri = `https://${req.get('host')}/auth/whatsapp/callback`;
 
-    // 1. Exchange code for Access Token
     const tokenRes = await axios.get('https://graph.facebook.com/v20.0/oauth/access_token', {
       params: {
         client_id: process.env.META_APP_ID,
@@ -937,7 +956,6 @@ app.get('/auth/whatsapp/callback', async (req, res) => {
 
     const userToken = tokenRes.data.access_token;
 
-    // 2. Safely query WABA details
     const waAccountRes = await axios.get('https://graph.facebook.com/v20.0/me/whatsapp_business_accounts', {
       params: { access_token: userToken }
     }).catch(() => null);
@@ -956,7 +974,6 @@ app.get('/auth/whatsapp/callback', async (req, res) => {
         whatsapp_access_token: userToken
       }).eq('id', storeId);
     } else {
-      // Even if no WABA is found, save user token so connection doesn't hard-crash
       await supabaseAdmin.from('stores').update({
         whatsapp_access_token: userToken
       }).eq('id', storeId);
@@ -1053,7 +1070,7 @@ app.post('/api/connect-all-channels', async (req, res) => {
 });
 
 /* ==========================================================================
-   SCOPED DASHBOARD DATA API ROUTE
+   SCOPED DASHBOARD & PRODUCT CATALOG DATA API ROUTES
    ========================================================================== */
 
 app.get('/api/dashboard', async (req, res) => {
@@ -1091,6 +1108,34 @@ app.get('/api/dashboard', async (req, res) => {
     });
   } catch (err) {
     console.error('Dashboard API Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Add product to store catalog
+app.post('/api/products', async (req, res) => {
+  try {
+    const { store_id, name, price, stock_quantity, description } = req.body;
+
+    if (!store_id || !name || price === undefined) {
+      return res.status(400).json({ error: 'Missing required product parameters.' });
+    }
+
+    const { data, error } = await supabase.from('products').insert({
+      store_id,
+      title: name,
+      name,
+      price_npr: price,
+      price,
+      stock_quantity: stock_quantity || 0,
+      description: description || '',
+      created_at: new Date().toISOString()
+    }).select().single();
+
+    if (error) throw error;
+    return res.json({ success: true, product: data });
+  } catch (err) {
+    console.error('Error adding product:', err);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -1173,7 +1218,6 @@ app.post('/webhook', async (req, res) => {
    UNIFIED MULTI-CHANNEL INBOX ENDPOINTS (STRICTLY SCOPED)
    ========================================================================== */
 
-// Serve Inbox Page
 // Serve Inbox Page without caching
 app.get('/inbox', (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
@@ -1185,7 +1229,6 @@ app.get('/api/inbox/conversations', async (req, res) => {
   try {
     const { store_id } = req.query;
 
-    // Strict Guard: Return empty if store_id is invalid or missing
     if (!store_id || store_id === 'undefined' || store_id === 'null') {
       return res.json([]);
     }
@@ -1198,7 +1241,6 @@ app.get('/api/inbox/conversations', async (req, res) => {
 
     if (error) throw error;
 
-    // Deduplicate to get the latest message per customer thread
     const threads = [];
     const seenPsids = new Set();
 
@@ -1242,6 +1284,7 @@ app.get('/api/inbox/messages', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
 app.post('/api/inbox/reply', async (req, res) => {
   const { store_id, customer_id, message_text } = req.body;
 
@@ -1250,7 +1293,6 @@ app.post('/api/inbox/reply', async (req, res) => {
   }
 
   try {
-    // 1. Fetch Store details to get Facebook Page Access Token
     const { data: store, error: storeErr } = await supabase
       .from('stores')
       .select('facebook_page_access_token')
@@ -1261,7 +1303,6 @@ app.post('/api/inbox/reply', async (req, res) => {
       return res.status(400).json({ error: 'Facebook token not found for store.' });
     }
 
-    // 2. Send message to Facebook Messenger via Graph API
     await axios.post(
       `https://graph.facebook.com/v20.0/me/messages`,
       {
@@ -1273,11 +1314,10 @@ app.post('/api/inbox/reply', async (req, res) => {
       }
     );
 
-    // 3. Save agent reply in 'chat_messages' table (Matching /inbox endpoints schema)
     await supabase.from('chat_messages').insert({
       store_id: store_id,
       sender_psid: customer_id,
-      role: 'agent', // Sets role to 'agent' so UI displays green bubble
+      role: 'agent',
       content: message_text,
       created_at: new Date().toISOString()
     });
@@ -1288,6 +1328,7 @@ app.post('/api/inbox/reply', async (req, res) => {
     return res.status(500).json({ error: err.response?.data?.error?.message || 'Failed to send message.' });
   }
 });
+
 // Start Express Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
