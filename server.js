@@ -341,7 +341,12 @@ async function getChatHistory(storeId, senderPsid, limit = 8) {
     .limit(limit);
 
   if (error || !data) return [];
-  return data.reverse().map(msg => ({ role: msg.role, content: msg.content }));
+  
+  // Maps non-standard roles to 'assistant' so Groq API doesn't crash
+  return data.reverse().map(msg => ({
+    role: (msg.role === 'agent' || msg.role === 'system') ? 'assistant' : msg.role,
+    content: msg.content
+  }));
 }
 
 async function saveOrder({ store_id, customer_name, phone_number, delivery_location, product_title, quantity, total_price_npr, delivery_charge_npr }) {
