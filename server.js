@@ -1113,6 +1113,7 @@ app.get('/api/dashboard', async (req, res) => {
 });
 
 // Add product to store catalog
+// Add product to store catalog
 app.post('/api/products', async (req, res) => {
   try {
     const { store_id, name, price, stock_quantity, description } = req.body;
@@ -1121,7 +1122,8 @@ app.post('/api/products', async (req, res) => {
       return res.status(400).json({ error: 'Missing required product parameters.' });
     }
 
-    const { data, error } = await supabase.from('products').insert({
+    // Payload prepared for Supabase insert
+    const insertPayload = {
       store_id,
       title: name,
       name,
@@ -1130,7 +1132,13 @@ app.post('/api/products', async (req, res) => {
       stock_quantity: stock_quantity || 0,
       description: description || '',
       created_at: new Date().toISOString()
-    }).select().single();
+    };
+
+    const { data, error } = await supabase
+      .from('products')
+      .insert(insertPayload)
+      .select()
+      .single();
 
     if (error) throw error;
     return res.json({ success: true, product: data });
