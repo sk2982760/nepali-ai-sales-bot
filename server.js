@@ -356,7 +356,8 @@ async function saveOrder({ store_id, customer_name, phone_number, delivery_locat
     return { success: false, error: 'Incomplete user details provided.' };
   }
 
-  const { data: orderData, error: orderError } = await supabase
+  // Use supabaseAdmin to bypass RLS policies
+  const { data: orderData, error: orderError } = await supabaseAdmin
     .from('orders')
     .insert([
       {
@@ -378,7 +379,7 @@ async function saveOrder({ store_id, customer_name, phone_number, delivery_locat
     return { success: false, error: orderError.message };
   }
 
-  const { data: prodData } = await supabase
+  const { data: prodData } = await supabaseAdmin
     .from('products')
     .select('id, stock_quantity')
     .eq('store_id', store_id)
@@ -387,7 +388,7 @@ async function saveOrder({ store_id, customer_name, phone_number, delivery_locat
 
   if (prodData) {
     const newStock = Math.max(0, prodData.stock_quantity - orderQuantity);
-    await supabase
+    await supabaseAdmin
       .from('products')
       .update({ stock_quantity: newStock })
       .eq('id', prodData.id);
@@ -395,7 +396,6 @@ async function saveOrder({ store_id, customer_name, phone_number, delivery_locat
 
   return { success: true, order: orderData[0] };
 }
-
 const orderTool = {
   type: 'function',
   function: {
@@ -1339,6 +1339,31 @@ app.post('/api/inbox/reply', async (req, res) => {
   } catch (err) {
     console.error('Manual Reply Error:', err.response?.data || err.message);
     return res.status(500).json({ error: err.response?.data?.error?.message || 'Failed to send message.' });
+  }
+});
+// ... existing routes (e.g. /api/products, /api/inbox/reply, webhook routes) ...
+
+// Order status update route
+app.post('/api/orders/update-status', async (req, res) => {
+  const { order_id, status } = req.body;
+
+  if (!order_id || !['pending', 'completed'].includes(status)) {
+    return res.status(400).json({ error: 'Invalid parameters.' });
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('orders')
+      .update({ status })
+      .eq('id', order_id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return res.json({ success: true, order: data });
+  } catch (err) {
+    console.error('Error updating order status:', err.message);
+    return res.status(500).json({ error: err.message });
   }
 });
 

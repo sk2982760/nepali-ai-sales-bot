@@ -241,7 +241,6 @@
         return;
       }
 
-      // Sync active store ID to localStorage and update navigation links
       localStorage.setItem('store_id', storeId);
       
       const inboxLink = document.getElementById('inbox-nav-link');
@@ -264,7 +263,6 @@
 
         document.getElementById('active-store-display').textContent = `${data.store.store_name} (${data.store.id.substring(0, 8)}...)`;
 
-        // UPDATE CHANNEL CONNECTION BUTTONS BASED ON STORE DATA
         if (data.store.facebook_page_id) {
           const fbLink = document.getElementById('auth-fb-link');
           if (fbLink) {
@@ -290,18 +288,23 @@
             const total = (Number(o.total_price_npr) || 0) + (Number(o.delivery_charge_npr) || 0);
             
             let statusBadge = '';
-            let actionBtn = '';
+            const currentStatus = o.status || 'pending';
 
-            if (o.status === 'confirmed') {
-              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Confirmed</span>`;
-              actionBtn = `<button onclick="dispatchOrder(${o.id})" class="text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-3 py-1.5 rounded transition">🚀 Dispatch Pathao</button>`;
-            } else if (o.status === 'dispatched') {
-              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Dispatched</span>`;
-              actionBtn = `<span class="text-xs text-slate-500 font-mono">${o.courier_tracking_id || 'Pathao'}</span>`;
+            if (currentStatus === 'completed') {
+              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Completed</span>`;
+            } else if (currentStatus === 'confirmed') {
+              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Confirmed</span>`;
             } else {
-              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Pending COD</span>`;
-              actionBtn = `<span class="text-xs text-slate-500 italic">Awaiting 'YES'</span>`;
+              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Pending</span>`;
             }
+
+            const actionSelect = `
+              <select onchange="updateOrderStatus(${o.id}, this.value)" class="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded px-2 py-1 focus:outline-none focus:border-indigo-500 cursor-pointer">
+                <option value="pending" ${currentStatus === 'pending' || currentStatus === 'unconfirmed' ? 'selected' : ''}>Pending</option>
+                <option value="confirmed" ${currentStatus === 'confirmed' ? 'selected' : ''}>Confirmed</option>
+                <option value="completed" ${currentStatus === 'completed' ? 'selected' : ''}>Completed</option>
+              </select>
+            `;
 
             return `
               <tr class="hover:bg-slate-800/50 transition">
@@ -312,17 +315,17 @@
                 <td class="p-4">${o.product_title || 'N/A'} (x${o.quantity || 1})</td>
                 <td class="p-4 font-bold text-slate-100">NPR ${total.toLocaleString()}</td>
                 <td class="p-4">${statusBadge}</td>
-                <td class="p-4 text-right">${actionBtn}</td>
+                <td class="p-4 text-right">${actionSelect}</td>
               </tr>
             `;
           }).join('');
 
           // Update KPI Stats
           document.getElementById('kpi-orders').textContent = data.orders.length;
-          document.getElementById('kpi-pending-cod').textContent = data.orders.filter(o => o.status === 'unconfirmed').length;
+          document.getElementById('kpi-pending-cod').textContent = data.orders.filter(o => o.status === 'pending' || o.status === 'unconfirmed').length;
           
           const confirmedRev = data.orders
-            .filter(o => o.status === 'confirmed' || o.status === 'dispatched')
+            .filter(o => o.status === 'confirmed' || o.status === 'completed')
             .reduce((sum, item) => sum + (Number(item.total_price_npr) || 0) + (Number(item.delivery_charge_npr) || 0), 0);
             
           document.getElementById('kpi-revenue').textContent = `NPR ${confirmedRev.toLocaleString()}`;
@@ -365,21 +368,23 @@
       }
     }
 
-    async function dispatchOrder(orderId) {
-      if (!confirm(`Are you sure you want to dispatch Order #${orderId} via Pathao Courier?`)) return;
-
+    async function updateOrderStatus(orderId, newStatus) {
       try {
-        const res = await fetch(`/api/orders/${orderId}/dispatch`, { method: 'POST' });
-        const result = await res.json();
-
-        if (result.success) {
-          alert(`Order dispatched successfully! Tracking ID: ${result.tracking_id}`);
+        const res = await fetch('/api/orders/update-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ order_id: orderId, status: newStatus })
+        });
+        
+        const data = await res.json();
+        if (data.success) {
           loadDashboardData();
         } else {
-          alert(`Failed to dispatch: ${result.error}`);
+          alert('Failed to update status: ' + (data.error || 'Unknown error'));
         }
       } catch (err) {
-        alert('Network error while dispatching order.');
+        console.error('Error updating order status:', err);
+        alert('Network error while updating status.');
       }
     }
 
