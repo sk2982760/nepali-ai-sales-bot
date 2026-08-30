@@ -115,8 +115,8 @@
             🔄 Refresh
           </button>
           <button onclick="exportOrdersToCSV()" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-3 py-2 rounded-lg transition shrink-0">
-  📥 Export CSV
-</button>
+            📥 Export CSV
+          </button>
         </div>
       </div>
 
@@ -309,11 +309,9 @@
           }
         }
 
-        // Cache raw orders and trigger filtering
         rawOrders = data.orders || [];
         filterOrders();
 
-        // Update KPI Stats
         document.getElementById('kpi-orders').textContent = rawOrders.length;
         document.getElementById('kpi-pending-cod').textContent = rawOrders.filter(o => o.status === 'pending' || o.status === 'unconfirmed').length;
         
@@ -323,7 +321,6 @@
           
         document.getElementById('kpi-revenue').textContent = `NPR ${confirmedRev.toLocaleString()}`;
 
-        // Render Products
         renderProducts(data.products || []);
 
       } catch (err) {
@@ -338,12 +335,10 @@
       const filtered = rawOrders.filter(order => {
         const currentStatus = order.status || 'pending';
         
-        // 1. Status Filter
         const statusMatch = selectedStatus === 'all' 
           || currentStatus === selectedStatus 
           || (selectedStatus === 'pending' && currentStatus === 'unconfirmed');
 
-        // 2. Search Filter (Name, Phone, Address, Product Title, Order ID)
         const nameStr = (order.customer_name || '').toLowerCase();
         const phoneStr = (order.phone_number || '').toLowerCase();
         const addrStr = (order.delivery_location || '').toLowerCase();
@@ -455,56 +450,78 @@
         alert('Network error while updating status.');
       }
     }
-// ... other JavaScript functions (updateOrderStatus, filterOrders, etc.) ...
 
- async function exportOrdersToCSV() {
-  const storeId = getActiveStoreId();
-  let ordersToExport = rawOrders;
+    async function exportOrdersToCSV() {
+      const storeId = getActiveStoreId();
+      let ordersToExport = rawOrders;
 
-  // Fallback: If rawOrders is empty, fetch fresh orders from API
-  if (!ordersToExport || ordersToExport.length === 0) {
-    try {
-      const res = await fetch(`/api/dashboard?store_id=${encodeURIComponent(storeId)}`);
-      const data = await res.json();
-      ordersToExport = data.orders || [];
-    } catch (err) {
-      console.error('Failed to fetch orders for export:', err);
+      if (!ordersToExport || ordersToExport.length === 0) {
+        try {
+          const res = await fetch(`/api/dashboard?store_id=${encodeURIComponent(storeId)}`);
+          const data = await res.json();
+          ordersToExport = data.orders || [];
+        } catch (err) {
+          console.error('Failed to fetch orders for export:', err);
+        }
+      }
+
+      const searchQuery = (document.getElementById('order-search-input')?.value || '').toLowerCase().trim();
+      const selectedStatus = document.getElementById('order-status-filter')?.value || 'all';
+
+      ordersToExport = ordersToExport.filter(o => {
+        const currentStatus = o.status || 'pending';
+        const statusMatch = selectedStatus === 'all' 
+          || currentStatus === selectedStatus 
+          || (selectedStatus === 'pending' && currentStatus === 'unconfirmed');
+
+        const searchMatch = !searchQuery 
+          || (o.customer_name || '').toLowerCase().includes(searchQuery)
+          || (o.phone_number || '').toLowerCase().includes(searchQuery)
+          || (o.delivery_location || '').toLowerCase().includes(searchQuery)
+          || (o.product_title || '').toLowerCase().includes(searchQuery)
+          || String(o.id).includes(searchQuery);
+
+        return statusMatch && searchMatch;
+      });
+
+      if (!ordersToExport || ordersToExport.length === 0) {
+        alert('No order data available to export.');
+        return;
+      }
+
+      const headers = ['Order ID', 'Customer Name', 'Phone Number', 'Delivery Address', 'Product Ordered', 'Quantity', 'Total Amount (NPR)', 'Status'];
+      
+      const rows = ordersToExport.map(o => [
+        `"#${o.id}"`,
+        `"${(o.customer_name || '').replace(/"/g, '""')}"`,
+        `"${(o.phone_number || '').replace(/"/g, '""')}"`,
+        `"${(o.delivery_location || '').replace(/"/g, '""')}"`,
+        `"${(o.product_title || '').replace(/"/g, '""')}"`,
+        o.quantity || 1,
+        (Number(o.total_price_npr) || 0) + (Number(o.delivery_charge_npr) || 0),
+        `"${o.status || 'pending'}"`
+      ]);
+
+      const csvString = [headers.join(','), ...rows.map(e => e.join(','))].join('\r\n');
+      const blob = new Blob(['\ufeff' + csvString], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `orders_export_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
     }
-  }
 
-  if (!ordersToExport || ordersToExport.length === 0) {
-    alert('No order data available to export.');
-    return;
-  }
+    function handleLogout() {
+      localStorage.removeItem('store_id');
+      localStorage.removeItem('supabase_session');
+      window.location.href = '/login';
+    }
 
-  const headers = ['Order ID', 'Customer Name', 'Phone Number', 'Delivery Address', 'Product Ordered', 'Quantity', 'Total Amount (NPR)', 'Status'];
-  
-  const rows = ordersToExport.map(o => [
-    `"#${o.id}"`,
-    `"${(o.customer_name || '').replace(/"/g, '""')}"`,
-    `"${(o.phone_number || '').replace(/"/g, '""')}"`,
-    `"${(o.delivery_location || '').replace(/"/g, '""')}"`,
-    `"${(o.product_title || '').replace(/"/g, '""')}"`,
-    o.quantity || 1,
-    (Number(o.total_price_npr) || 0) + (Number(o.delivery_charge_npr) || 0),
-    `"${o.status || 'pending'}"`
-  ]);
-
-  // Combine headers and data rows into CSV string
-  const csvString = [headers.join(','), ...rows.map(e => e.join(','))].join('\r\n');
-
-  // Create UTF-8 Blob for robust Excel downloading
-  const blob = new Blob(['\ufeff' + csvString], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  
-  const link = document.createElement('a');
-  link.setAttribute('href', url);
-  link.setAttribute('download', `orders_export_${new Date().toISOString().slice(0, 10)}.csv`);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
+    document.addEventListener('DOMContentLoaded', loadDashboardData);
   </script>
 </body>
 </html>
