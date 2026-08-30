@@ -114,6 +114,9 @@
           <button onclick="loadDashboardData()" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-2 rounded-lg transition shrink-0">
             🔄 Refresh
           </button>
+          <button onclick="exportOrdersToCSV()" class="text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-3 py-2 rounded-lg transition shrink-0">
+  📥 Export CSV
+</button>
         </div>
       </div>
 
@@ -451,6 +454,38 @@
         console.error('Error updating order status:', err);
         alert('Network error while updating status.');
       }
+    }
+// ... other JavaScript functions (updateOrderStatus, filterOrders, etc.) ...
+
+    function exportOrdersToCSV() {
+      if (!rawOrders || rawOrders.length === 0) {
+        alert('No order data available to export.');
+        return;
+      }
+
+      const headers = ['Order ID', 'Customer Name', 'Phone Number', 'Delivery Address', 'Product Ordered', 'Quantity', 'Total Amount (NPR)', 'Status'];
+      
+      const rows = rawOrders.map(o => [
+        `"#${o.id}"`,
+        `"${(o.customer_name || '').replace(/"/g, '""')}"`,
+        `"${(o.phone_number || '').replace(/"/g, '""')}"`,
+        `"${(o.delivery_location || '').replace(/"/g, '""')}"`,
+        `"${(o.product_title || '').replace(/"/g, '""')}"`,
+        o.quantity || 1,
+        (Number(o.total_price_npr) || 0) + (Number(o.delivery_charge_npr) || 0),
+        `"${o.status || 'pending'}"`
+      ]);
+
+      const csvContent = 'data:text/csv;charset=utf-8,' 
+        + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement('a');
+      link.setAttribute('href', encodedUri);
+      link.setAttribute('download', `orders_export_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     }
 
     function handleLogout() {
