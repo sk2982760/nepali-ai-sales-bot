@@ -87,11 +87,34 @@
 
     <!-- Recent Live Orders Table -->
     <section class="bg-slate-800/40 border border-slate-700/60 rounded-xl overflow-hidden">
-      <div class="p-5 border-b border-slate-700/60 flex justify-between items-center">
+      <div class="p-5 border-b border-slate-700/60 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <h2 class="text-lg font-bold text-white">Live Customer Orders</h2>
-        <button onclick="loadDashboardData()" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded transition">
-          🔄 Refresh Data
-        </button>
+        
+        <!-- Search & Filter Controls -->
+        <div class="flex flex-wrap items-center gap-3 w-full md:w-auto">
+          <input 
+            type="text" 
+            id="order-search-input" 
+            oninput="filterOrders()" 
+            placeholder="Search name, phone, product..." 
+            class="bg-slate-950 border border-slate-800 text-xs text-white rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 w-full sm:w-64"
+          >
+          
+          <select 
+            id="order-status-filter" 
+            onchange="filterOrders()" 
+            class="bg-slate-950 border border-slate-800 text-xs text-white rounded-lg px-3 py-2 focus:outline-none focus:border-indigo-500 cursor-pointer"
+          >
+            <option value="all">All Statuses</option>
+            <option value="pending">Pending</option>
+            <option value="confirmed">Confirmed</option>
+            <option value="completed">Completed</option>
+          </select>
+
+          <button onclick="loadDashboardData()" class="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-2 rounded-lg transition shrink-0">
+            🔄 Refresh
+          </button>
+        </div>
       </div>
 
       <div class="overflow-x-auto">
@@ -179,6 +202,8 @@
   </div>
 
   <script>
+    let rawOrders = [];
+
     function getActiveStoreId() {
       const urlParams = new URLSearchParams(window.location.search);
       const urlStoreId = urlParams.get('store_id');
@@ -281,90 +306,130 @@
           }
         }
 
-        // Render Orders
-        const ordersTbody = document.getElementById('orders-table-body');
-        if (data.orders && data.orders.length > 0) {
-          ordersTbody.innerHTML = data.orders.map(o => {
-            const total = (Number(o.total_price_npr) || 0) + (Number(o.delivery_charge_npr) || 0);
-            
-            let statusBadge = '';
-            const currentStatus = o.status || 'pending';
+        // Cache raw orders and trigger filtering
+        rawOrders = data.orders || [];
+        filterOrders();
 
-            if (currentStatus === 'completed') {
-              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Completed</span>`;
-            } else if (currentStatus === 'confirmed') {
-              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Confirmed</span>`;
-            } else {
-              statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Pending</span>`;
-            }
-
-            const actionSelect = `
-              <select onchange="updateOrderStatus(${o.id}, this.value)" class="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded px-2 py-1 focus:outline-none focus:border-indigo-500 cursor-pointer">
-                <option value="pending" ${currentStatus === 'pending' || currentStatus === 'unconfirmed' ? 'selected' : ''}>Pending</option>
-                <option value="confirmed" ${currentStatus === 'confirmed' ? 'selected' : ''}>Confirmed</option>
-                <option value="completed" ${currentStatus === 'completed' ? 'selected' : ''}>Completed</option>
-              </select>
-            `;
-
-            return `
-              <tr class="hover:bg-slate-800/50 transition">
-                <td class="p-4 font-mono text-emerald-400">#${o.id}</td>
-                <td class="p-4 font-semibold text-white">${o.customer_name || 'N/A'}</td>
-                <td class="p-4 font-mono">${o.phone_number || 'N/A'}</td>
-                <td class="p-4">${o.delivery_location || 'N/A'}</td>
-                <td class="p-4">${o.product_title || 'N/A'} (x${o.quantity || 1})</td>
-                <td class="p-4 font-bold text-slate-100">NPR ${total.toLocaleString()}</td>
-                <td class="p-4">${statusBadge}</td>
-                <td class="p-4 text-right">${actionSelect}</td>
-              </tr>
-            `;
-          }).join('');
-
-          // Update KPI Stats
-          document.getElementById('kpi-orders').textContent = data.orders.length;
-          document.getElementById('kpi-pending-cod').textContent = data.orders.filter(o => o.status === 'pending' || o.status === 'unconfirmed').length;
+        // Update KPI Stats
+        document.getElementById('kpi-orders').textContent = rawOrders.length;
+        document.getElementById('kpi-pending-cod').textContent = rawOrders.filter(o => o.status === 'pending' || o.status === 'unconfirmed').length;
+        
+        const confirmedRev = rawOrders
+          .filter(o => o.status === 'confirmed' || o.status === 'completed')
+          .reduce((sum, item) => sum + (Number(item.total_price_npr) || 0) + (Number(item.delivery_charge_npr) || 0), 0);
           
-          const confirmedRev = data.orders
-            .filter(o => o.status === 'confirmed' || o.status === 'completed')
-            .reduce((sum, item) => sum + (Number(item.total_price_npr) || 0) + (Number(item.delivery_charge_npr) || 0), 0);
-            
-          document.getElementById('kpi-revenue').textContent = `NPR ${confirmedRev.toLocaleString()}`;
-        } else {
-          ordersTbody.innerHTML = `<tr><td colspan="8" class="p-6 text-center text-slate-500">No orders found yet.</td></tr>`;
-          document.getElementById('kpi-orders').textContent = '0';
-          document.getElementById('kpi-pending-cod').textContent = '0';
-          document.getElementById('kpi-revenue').textContent = 'NPR 0';
-        }
+        document.getElementById('kpi-revenue').textContent = `NPR ${confirmedRev.toLocaleString()}`;
 
         // Render Products
-        const productsTbody = document.getElementById('products-table-body');
-        if (data.products && data.products.length > 0) {
-          productsTbody.innerHTML = data.products.map(p => {
-            const title = p.name || p.title || 'Untitled Product';
-            const price = p.price !== undefined ? p.price : (p.price_npr || 0);
-            const stock = p.stock_quantity !== undefined ? p.stock_quantity : 0;
+        renderProducts(data.products || []);
 
-            return `
-              <tr class="hover:bg-slate-800/50 transition">
-                <td class="p-4 font-semibold text-white">${title}</td>
-                <td class="p-4 font-mono text-emerald-400">NPR ${Number(price).toLocaleString()}</td>
-                <td class="p-4 font-bold ${stock > 0 ? 'text-indigo-400' : 'text-rose-400'}">${stock} remaining</td>
-                <td class="p-4">
-                  <span class="px-2.5 py-1 text-xs rounded-full font-semibold ${stock > 0 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">
-                    ${stock > 0 ? 'In Stock' : 'Out of Stock'}
-                  </span>
-                </td>
-              </tr>
-            `;
-          }).join('');
-
-          document.getElementById('kpi-products').textContent = data.products.length;
-        } else {
-          productsTbody.innerHTML = `<tr><td colspan="4" class="p-6 text-center text-slate-500">No products found in inventory.</td></tr>`;
-          document.getElementById('kpi-products').textContent = '0';
-        }
       } catch (err) {
         console.error('Failed to load dashboard:', err);
+      }
+    }
+
+    function filterOrders() {
+      const searchQuery = (document.getElementById('order-search-input')?.value || '').toLowerCase().trim();
+      const selectedStatus = document.getElementById('order-status-filter')?.value || 'all';
+
+      const filtered = rawOrders.filter(order => {
+        const currentStatus = order.status || 'pending';
+        
+        // 1. Status Filter
+        const statusMatch = selectedStatus === 'all' 
+          || currentStatus === selectedStatus 
+          || (selectedStatus === 'pending' && currentStatus === 'unconfirmed');
+
+        // 2. Search Filter (Name, Phone, Address, Product Title, Order ID)
+        const nameStr = (order.customer_name || '').toLowerCase();
+        const phoneStr = (order.phone_number || '').toLowerCase();
+        const addrStr = (order.delivery_location || '').toLowerCase();
+        const productStr = (order.product_title || '').toLowerCase();
+        const idStr = String(order.id);
+
+        const searchMatch = !searchQuery 
+          || nameStr.includes(searchQuery) 
+          || phoneStr.includes(searchQuery)
+          || addrStr.includes(searchQuery)
+          || productStr.includes(searchQuery)
+          || idStr.includes(searchQuery);
+
+        return statusMatch && searchMatch;
+      });
+
+      renderOrdersTable(filtered);
+    }
+
+    function renderOrdersTable(orders) {
+      const ordersTbody = document.getElementById('orders-table-body');
+      
+      if (!orders || orders.length === 0) {
+        ordersTbody.innerHTML = `<tr><td colspan="8" class="p-6 text-center text-slate-500">No matching orders found.</td></tr>`;
+        return;
+      }
+
+      ordersTbody.innerHTML = orders.map(o => {
+        const total = (Number(o.total_price_npr) || 0) + (Number(o.delivery_charge_npr) || 0);
+        const currentStatus = o.status || 'pending';
+
+        let statusBadge = '';
+        if (currentStatus === 'completed') {
+          statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Completed</span>`;
+        } else if (currentStatus === 'confirmed') {
+          statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Confirmed</span>`;
+        } else {
+          statusBadge = `<span class="px-2.5 py-1 text-xs rounded-full font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">Pending</span>`;
+        }
+
+        const actionSelect = `
+          <select onchange="updateOrderStatus(${o.id}, this.value)" class="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded px-2 py-1 focus:outline-none focus:border-indigo-500 cursor-pointer">
+            <option value="pending" ${currentStatus === 'pending' || currentStatus === 'unconfirmed' ? 'selected' : ''}>Pending</option>
+            <option value="confirmed" ${currentStatus === 'confirmed' ? 'selected' : ''}>Confirmed</option>
+            <option value="completed" ${currentStatus === 'completed' ? 'selected' : ''}>Completed</option>
+          </select>
+        `;
+
+        return `
+          <tr class="hover:bg-slate-800/50 transition">
+            <td class="p-4 font-mono text-emerald-400">#${o.id}</td>
+            <td class="p-4 font-semibold text-white">${o.customer_name || 'N/A'}</td>
+            <td class="p-4 font-mono">${o.phone_number || 'N/A'}</td>
+            <td class="p-4">${o.delivery_location || 'N/A'}</td>
+            <td class="p-4">${o.product_title || 'N/A'} (x${o.quantity || 1})</td>
+            <td class="p-4 font-bold text-slate-100">NPR ${total.toLocaleString()}</td>
+            <td class="p-4">${statusBadge}</td>
+            <td class="p-4 text-right">${actionSelect}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderProducts(products) {
+      const productsTbody = document.getElementById('products-table-body');
+      if (products && products.length > 0) {
+        productsTbody.innerHTML = products.map(p => {
+          const title = p.name || p.title || 'Untitled Product';
+          const price = p.price !== undefined ? p.price : (p.price_npr || 0);
+          const stock = p.stock_quantity !== undefined ? p.stock_quantity : 0;
+
+          return `
+            <tr class="hover:bg-slate-800/50 transition">
+              <td class="p-4 font-semibold text-white">${title}</td>
+              <td class="p-4 font-mono text-emerald-400">NPR ${Number(price).toLocaleString()}</td>
+              <td class="p-4 font-bold ${stock > 0 ? 'text-indigo-400' : 'text-rose-400'}">${stock} remaining</td>
+              <td class="p-4">
+                <span class="px-2.5 py-1 text-xs rounded-full font-semibold ${stock > 0 ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'}">
+                  ${stock > 0 ? 'In Stock' : 'Out of Stock'}
+                </span>
+              </td>
+            </tr>
+          `;
+        }).join('');
+
+        document.getElementById('kpi-products').textContent = products.length;
+      } else {
+        productsTbody.innerHTML = `<tr><td colspan="4" class="p-6 text-center text-slate-500">No products found in inventory.</td></tr>`;
+        document.getElementById('kpi-products').textContent = '0';
       }
     }
 
