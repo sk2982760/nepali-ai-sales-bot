@@ -6,6 +6,7 @@ const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
 const cron = require('node-cron');
 const bcrypt = require('bcryptjs');
+const cookieParser = require('cookie-parser');
 
 // Ensure process.env.SUPABASE_KEY matches your Render environment variable name
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -31,6 +32,7 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 
 const app = express();
 app.use(express.json());
+app.use(cookieParser());
 
 // Serve static files (e.g. index.html, dashboard.html, signup.html, login.html)
 app.use(express.static(__dirname));
@@ -44,8 +46,15 @@ app.get('/login', (req, res) => {
   res.sendFile(path.join(__dirname, 'login.html'));
 });
 
-// Serve Dashboard
+// Serve Dashboard (With Session / Cookie Protection Check)
 app.get('/dashboard', (req, res) => {
+  const storeId = req.query.store_id || req.cookies?.store_id;
+
+  // Allow access if store_id exists in query parameter or browser cookies
+  if (!storeId) {
+    return res.redirect('/login');
+  }
+
   res.sendFile(path.join(__dirname, 'dashboard.html'));
 });
 
@@ -121,6 +130,8 @@ app.post('/api/signup', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email already registered or database error.' });
     }
 
+    res.cookie('store_id', store.id, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
+
     return res.json({
       success: true,
       message: 'Account created successfully!',
@@ -175,6 +186,8 @@ app.post('/api/login', async (req, res) => {
     if (!isMatch) {
       return res.status(400).json({ success: false, error: 'Invalid credentials' });
     }
+
+    res.cookie('store_id', store.id, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
 
     return res.json({
       success: true,
@@ -958,6 +971,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
       }).eq('id', targetStoreId);
     }
 
+    res.cookie('store_id', targetStoreId, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
     res.redirect(`/dashboard?store_id=${targetStoreId}`);
   } catch (err) {
     console.error('FB Auth Error:', err.response?.data || err.message);
@@ -1023,6 +1037,7 @@ app.get('/auth/whatsapp/callback', async (req, res) => {
       }).eq('id', storeId);
     }
 
+    res.cookie('store_id', storeId, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
     res.redirect(`/dashboard?store_id=${storeId}`);
   } catch (err) {
     console.error('WhatsApp Auth Detailed Error:', err.response?.data || err.message);
@@ -1101,6 +1116,8 @@ app.post('/api/connect-all-channels', async (req, res) => {
     const createdStore = await upsertStore(storePayload);
     await saveStoreChannels(createdStore.id, channelList);
 
+    res.cookie('store_id', createdStore.id, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
+
     return res.status(200).json({
       success: true,
       connectedChannels,
@@ -1119,7 +1136,7 @@ app.post('/api/connect-all-channels', async (req, res) => {
 
 app.get('/api/dashboard', async (req, res) => {
   try {
-    const storeId = req.query.store_id;
+    const storeId = req.query.store_id || req.cookies?.store_id;
 
     let storeQuery = supabase.from('stores').select('*');
     if (storeId) {
@@ -1399,6 +1416,7 @@ app.post('/api/orders/update-status', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
 app.get('/auth/meta', (req, res) => {
     const storeName = req.query.store_name;
 
@@ -1420,6 +1438,7 @@ app.get('/auth/meta', (req, res) => {
     // Redirect the browser to Facebook
     res.redirect(metaAuthUrl);
 });
+
 app.get('/auth/meta/callback', async (req, res) => {
     const { code, state } = req.query;
 
@@ -1457,29 +1476,34 @@ app.get('/auth/meta/callback', async (req, res) => {
         // 3. Save or update store details in Supabase
         const email = profile.email || `${profile.id}@facebook.com`;
         
-        // Save to Supabase (adjust 'stores' to your actual table name if different)
-        const { error: dbError } = await supabaseAdmin
+        const { data: store, error: dbError } = await supabaseAdmin
             .from('stores')
             .upsert({
                 facebook_id: profile.id,
                 email: email,
                 store_name: storeName || profile.name,
                 access_token: userAccessToken
-            }, { onConflict: 'facebook_id' });
+            }, { onConflict: 'facebook_id' })
+            .select()
+            .single();
 
         if (dbError) {
             console.error('Database Error:', dbError);
             return res.status(500).json({ error: dbError.message });
         }
 
-        // 4. Redirect directly to dashboard or pass success status
-        res.redirect('/dashboard?status=success');
+        // Set session cookie with the registered store ID
+        res.cookie('store_id', store.id, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
+
+        // Redirect directly to dashboard with query param and session cookie set
+        res.redirect(`/dashboard?store_id=${store.id}&status=success`);
 
     } catch (err) {
         console.error('Callback Error:', err);
         res.status(500).send(`Server error: ${err.message}`);
     }
 });
+
 // Start Express Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
