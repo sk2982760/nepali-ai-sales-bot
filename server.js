@@ -130,7 +130,7 @@ app.post('/api/signup', async (req, res) => {
 
     // Set HTTP-only session cookie
     res.cookie('store_id', store.id, {
-      httpOnly: true,
+      httpOnly: false,
       sameSite: 'lax',
       secure: process.env.NODE_ENV === 'production',
       maxAge: 24 * 60 * 60 * 1000 // 24 hours
@@ -151,12 +151,9 @@ app.post('/api/signup', async (req, res) => {
 app.post('/api/login', async (req, res) => {
   try {
     console.log("=== LOGIN REQUEST RECEIVED ===");
-    console.log("Req Body:", req.body);
-
     const { email, password } = req.body;
 
     if (!email || !password) {
-      console.log("Missing fields:", { email: !!email, password: !!password });
       return res.status(400).json({ success: false, error: 'Email and password are required.' });
     }
 
@@ -170,10 +167,7 @@ app.post('/api/login', async (req, res) => {
       .eq('email', cleanEmail)
       .maybeSingle();
 
-    console.log("DB Store Record Found:", store);
-
     if (storeError || !store) {
-      console.log("Store Lookup Failed:", storeError?.message);
       return res.status(400).json({ success: false, error: 'Invalid credentials' });
     }
 
@@ -185,18 +179,17 @@ app.post('/api/login', async (req, res) => {
       isMatch = (cleanPassword === store.password);
     }
 
-    console.log("Password Match Result:", isMatch);
-
     if (!isMatch) {
       return res.status(400).json({ success: false, error: 'Invalid credentials' });
     }
 
     res.cookie('store_id', store.id, { 
-  maxAge: 24 * 60 * 60 * 1000, 
-  httpOnly: false,
-  sameSite: 'lax',
-  secure: process.env.NODE_ENV === 'production'
-});
+      maxAge: 24 * 60 * 60 * 1000, 
+      httpOnly: false,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production'
+    });
+
     return res.json({
       success: true,
       storeId: store.id,
@@ -477,7 +470,7 @@ EXAMPLES:
 `;
 
     const visionResponse = await groq.chat.completions.create({
-      model: 'qwen/qwen3.6-27b',
+      model: 'llama-3.2-11b-vision-preview',
       messages: [
         {
           role: 'user',
@@ -595,7 +588,7 @@ CRITICAL TOOL CALLING INSTRUCTION:
 
   const response = await groq.chat.completions.create({
     messages,
-    model: 'openai/gpt-oss-120b',
+    model: 'llama-3.3-70b-versatile',
     temperature: 0,
     ...(tools && { tools, tool_choice: 'auto' })
   });
@@ -717,6 +710,13 @@ app.post('/api/orders/:id/dispatch', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Order not found.' });
     }
 
+    if (!process.env.PATHAO_ACCESS_TOKEN || !process.env.PATHAO_STORE_ID) {
+      return res.status(400).json({
+        success: false,
+        error: 'Pathao API credentials are missing in process.env.'
+      });
+    }
+
     const pathaoResponse = await axios.post(
       `${process.env.PATHAO_BASE_URL || 'https://api-hermes.pathao.com'}/aladdin/api/v1/orders`,
       {
@@ -724,10 +724,10 @@ app.post('/api/orders/:id/dispatch', async (req, res) => {
         recipient_name: order.customer_name,
         recipient_phone: order.phone_number,
         recipient_address: order.delivery_location,
-        amount_to_collect: order.total_price_npr + order.delivery_charge_npr,
+        amount_to_collect: (order.total_price_npr || 0) + (order.delivery_charge_npr || 0),
         item_type: 2, // Parcel
         delivery_type: 48, // Standard Delivery
-        item_quantity: order.quantity,
+        item_quantity: order.quantity || 1,
         item_weight: 0.5
       },
       {
@@ -890,7 +890,6 @@ async function saveStoreChannels(storeId, channels) {
    SOCIAL CHANNEL OAUTH CONNECT ROUTES (FACEBOOK & WHATSAPP)
    ========================================================================== */
 
-// Function to consistently get the exact same redirect URI across both endpoints
 const getRedirectUri = (req) => {
   return process.env.FB_REDIRECT_URI || 'https://nepali-ai-sales-bot.onrender.com/auth/facebook/callback';
 };
@@ -944,9 +943,8 @@ app.get('/auth/facebook/callback', async (req, res) => {
   try {
     const appId = process.env.FB_APP_ID || process.env.META_APP_ID;
     const appSecret = process.env.FB_APP_SECRET || process.env.META_APP_SECRET;
-    const redirectUri = getRedirectUri(req); // MUST MATCH /auth/facebook EXACTLY
+    const redirectUri = getRedirectUri(req);
 
-    // 1. Exchange code for access token
     const tokenUrl = `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
     const tokenRes = await fetch(tokenUrl);
     const tokenData = await tokenRes.json();
@@ -958,7 +956,6 @@ app.get('/auth/facebook/callback', async (req, res) => {
 
     const userAccessToken = tokenData.access_token;
 
-    // 2. Query pages and connected Instagram account
     const pagesUrl = `https://graph.facebook.com/v20.0/me/accounts?fields=id,name,access_token,instagram_business_account&access_token=${userAccessToken}`;
     const pagesRes = await fetch(pagesUrl);
     const pagesData = await pagesRes.json();
@@ -973,7 +970,6 @@ app.get('/auth/facebook/callback', async (req, res) => {
     const pageAccessToken = primaryPage.access_token;
     const instagramId = primaryPage.instagram_business_account ? primaryPage.instagram_business_account.id : null;
 
-    // 3. Save to database
     const { error: dbError } = await supabase
       .from('stores')
       .update({
@@ -986,23 +982,23 @@ app.get('/auth/facebook/callback', async (req, res) => {
 
     if (dbError) throw dbError;
 
-    // 4. Set cookie and complete redirect
     res.cookie('store_id', targetStoreId, {
-      httpOnly: true,
-      secure: true,
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       maxAge: 24 * 60 * 60 * 1000
     });
 
-    return res.redirect('/dashboard.html?oauth=success');
+    return res.redirect('/dashboard?oauth=success');
   } catch (err) {
     console.error('Meta OAuth Handler Error:', err);
     return res.status(500).send('Failed to connect Facebook & Instagram.');
   }
 });
-// 2. WhatsApp Connect Initiation Route
+
+// 3. WhatsApp Connect Initiation Route
 app.get('/auth/whatsapp', (req, res) => {
-  const storeId = req.query.store_id;
+  const storeId = req.query.store_id || req.cookies?.store_id;
   if (!storeId) return res.status(400).send('Missing store_id parameter.');
 
   const appId = process.env.META_APP_ID;
@@ -1016,7 +1012,7 @@ app.get('/auth/whatsapp', (req, res) => {
 // Robust WhatsApp Callback Handler
 app.get('/auth/whatsapp/callback', async (req, res) => {
   const code = req.query.code;
-  const storeId = req.query.state || req.query.store_id;
+  const storeId = req.query.state || req.query.store_id || req.cookies?.store_id;
 
   if (!code) return res.status(400).send('WhatsApp OAuth failed: Missing authorization code.');
   if (!storeId) return res.status(400).send('WhatsApp OAuth failed: Missing store_id state.');
@@ -1059,11 +1055,11 @@ app.get('/auth/whatsapp/callback', async (req, res) => {
     }
 
     res.cookie('store_id', storeId, { 
-  maxAge: 24 * 60 * 60 * 1000, 
-  httpOnly: false,
-  sameSite: 'lax',
-  secure: process.env.NODE_ENV === 'production'
-});
+      maxAge: 24 * 60 * 60 * 1000, 
+      httpOnly: false,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production'
+    });
     res.redirect(`/dashboard?store_id=${storeId}`);
   } catch (err) {
     console.error('WhatsApp Auth Detailed Error:', err.response?.data || err.message);
@@ -1142,7 +1138,12 @@ app.post('/api/connect-all-channels', async (req, res) => {
     const createdStore = await upsertStore(storePayload);
     await saveStoreChannels(createdStore.id, channelList);
 
-    res.cookie('store_id', createdStore.id, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false, sameSite: 'lax', secure: process.env.NODE_ENV === 'production' });
+    res.cookie('store_id', createdStore.id, { 
+      maxAge: 24 * 60 * 60 * 1000, 
+      httpOnly: false, 
+      sameSite: 'lax', 
+      secure: process.env.NODE_ENV === 'production' 
+    });
 
     return res.status(200).json({
       success: true,
@@ -1423,7 +1424,7 @@ app.post('/api/inbox/reply', async (req, res) => {
 app.post('/api/orders/update-status', async (req, res) => {
   const { order_id, status } = req.body;
 
-  if (!order_id || !['pending', 'completed'].includes(status)) {
+  if (!order_id || !['pending', 'completed', 'dispatched', 'unconfirmed', 'confirmed'].includes(status)) {
     return res.status(400).json({ error: 'Invalid parameters.' });
   }
 
@@ -1450,18 +1451,13 @@ app.get('/auth/meta', (req, res) => {
         return res.status(400).send('Store name is required');
     }
 
-    // Your Meta App credentials (stored in .env)
     const appId = process.env.META_APP_ID;
     const redirectUri = encodeURIComponent('https://nepali-ai-sales-bot.onrender.com/auth/meta/callback');
     const scope = encodeURIComponent('pages_show_list,pages_messaging,instagram_basic,instagram_manage_messages');
 
-    // Pass store_name through the 'state' parameter so Meta returns it after auth
     const state = encodeURIComponent(JSON.stringify({ storeName }));
-
-    // Facebook OAuth Authorization URL
     const metaAuthUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}`;
 
-    // Redirect the browser to Facebook
     res.redirect(metaAuthUrl);
 });
 
@@ -1473,7 +1469,6 @@ app.get('/auth/meta/callback', async (req, res) => {
     }
 
     try {
-        // 1. Exchange code for Meta access token
         const tokenResponse = await fetch(
             `https://graph.facebook.com/v18.0/oauth/access_token?` +
             `client_id=${process.env.META_APP_ID}` +
@@ -1490,7 +1485,6 @@ app.get('/auth/meta/callback', async (req, res) => {
 
         const userAccessToken = tokenData.access_token;
 
-        // 2. Fetch Facebook profile info
         const profileRes = await fetch(`https://graph.facebook.com/me?fields=id,name,email&access_token=${userAccessToken}`);
         const profile = await profileRes.json();
 
@@ -1499,7 +1493,6 @@ app.get('/auth/meta/callback', async (req, res) => {
             try { storeName = JSON.parse(decodeURIComponent(state)).storeName; } catch (e) {}
         }
 
-        // 3. Save or update store details in Supabase
         const email = profile.email || `${profile.id}@facebook.com`;
         
         const { data: store, error: dbError } = await supabaseAdmin
@@ -1518,14 +1511,13 @@ app.get('/auth/meta/callback', async (req, res) => {
             return res.status(500).json({ error: dbError.message });
         }
 
-        // Set session cookie with the registered store ID
-       res.cookie('store_id', store.id, { 
-  maxAge: 24 * 60 * 60 * 1000, 
-  httpOnly: false,
-  sameSite: 'lax',
-  secure: process.env.NODE_ENV === 'production'
-});
-        // Redirect directly to dashboard with query param and session cookie set
+        res.cookie('store_id', store.id, { 
+          maxAge: 24 * 60 * 60 * 1000, 
+          httpOnly: false,
+          sameSite: 'lax',
+          secure: process.env.NODE_ENV === 'production'
+        });
+
         res.redirect(`/dashboard?store_id=${store.id}&status=success`);
 
     } catch (err) {
