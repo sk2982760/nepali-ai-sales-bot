@@ -254,6 +254,7 @@
         const res = await fetch('/api/products', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify(payload)
         });
 
@@ -291,7 +292,9 @@
       if (authWaLink) authWaLink.href = `/auth/whatsapp?store_id=${encodeURIComponent(storeId)}`;
 
       try {
-        const res = await fetch(`/api/dashboard?store_id=${encodeURIComponent(storeId)}`);
+        const res = await fetch(`/api/dashboard?store_id=${encodeURIComponent(storeId)}`, {
+          credentials: 'include'
+        });
         
         if (res.status === 401 || res.status === 403) {
           localStorage.removeItem('store_id');
@@ -453,6 +456,7 @@
         const res = await fetch('/api/orders/update-status', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
           body: JSON.stringify({ order_id: orderId, status: newStatus })
         });
         
@@ -474,7 +478,9 @@
 
       if (!ordersToExport || ordersToExport.length === 0) {
         try {
-          const res = await fetch(`/api/dashboard?store_id=${encodeURIComponent(storeId)}`);
+          const res = await fetch(`/api/dashboard?store_id=${encodeURIComponent(storeId)}`, {
+            credentials: 'include'
+          });
           const data = await res.json();
           ordersToExport = data.orders || [];
         } catch (err) {
