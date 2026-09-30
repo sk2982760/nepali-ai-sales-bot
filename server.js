@@ -1424,11 +1424,11 @@ app.get('/auth/meta/callback', async (req, res) => {
     const { code, state } = req.query;
 
     if (!code) {
-        return res.status(400).send('Authorization code missing from Meta redirect.');
+        return res.status(400).send('Authorization code missing.');
     }
 
     try {
-        // 1. Exchange temporary authorization code for long-lived access token
+        // 1. Exchange code for Meta access token
         const tokenResponse = await fetch(
             `https://graph.facebook.com/v18.0/oauth/access_token?` +
             `client_id=${process.env.META_APP_ID}` +
@@ -1444,20 +1444,43 @@ app.get('/auth/meta/callback', async (req, res) => {
         }
 
         const userAccessToken = tokenData.access_token;
-        
-        // Parse state if passed from frontend
+
+        // 2. Fetch Facebook profile info
+        const profileRes = await fetch(`https://graph.facebook.com/me?fields=id,name,email&access_token=${userAccessToken}`);
+        const profile = await profileRes.json();
+
         let storeName = '';
         if (state) {
             try { storeName = JSON.parse(decodeURIComponent(state)).storeName; } catch (e) {}
         }
 
-        // TODO: Save tokenData.access_token and storeName to Supabase database here
+        // 3. Upsert store/user in Supabase
+        const email = profile.email || `${profile.id}@facebook.user`;
+        const { data: user, error: dbError } = await supabaseAdmin
+            .from('stores') // adjust table name if needed (e.g., 'users')
+            .upsert({
+                facebook_id: profile.id,
+                email: email,
+                store_name: storeName || profile.name,
+                access_token: userAccessToken
+            }, { onConflict: 'facebook_id' })
+            .select()
+            .single();
 
-        // 2. Redirect user back to dashboard or success page
-        res.redirect('/dashboard?status=meta_connected');
+        if (dbError) throw dbError;
+
+        // 4. Set session cookie or JWT token so /dashboard recognizes the user as logged in
+        // Example using Express session cookie:
+        req.session.userId = user.id; 
+        
+        // OR if using cookies directly:
+        // res.cookie('token', generateAuthToken(user), { httpOnly: true, secure: true });
+
+        // 5. Redirect to dashboard
+        res.redirect('/dashboard');
     } catch (err) {
-        console.error('Callback Handler Error:', err);
-        res.status(500).send('Server error processing Meta OAuth callback.');
+        console.error('Callback Auth Error:', err);
+        res.status(500).send('Server error during Meta login.');
     }
 });
 // Start Express Server
