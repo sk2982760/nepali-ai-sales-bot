@@ -130,21 +130,24 @@ app.post('/api/signup', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email already registered or database error.' });
     }
 
-    // 3. Set the cookie
-    res.cookie('store_id', store.id, { 
-      maxAge: 24 * 60 * 60 * 1000, 
-      httpOnly: false,
+   // Set HTTP-only session cookie for the new store
+    res.cookie('store_id', store.id, {
+      httpOnly: true,
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production'
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 24 * 60 * 60 * 1000 // 24 hours
     });
 
-    // 4. Return top-level store_id so frontend localStorage pick-up works
-    return res.json({
+    return res.status(201).json({
       success: true,
       message: 'Account created successfully!',
       store_id: store.id,
       store: store
     });
+  } catch (error) {
+    console.error('Signup error:', error);
+    return res.status(500).json({ error: 'Failed to create account' });
+  }
 
   } catch (err) {
     console.error("Signup Catch Error:", err);
