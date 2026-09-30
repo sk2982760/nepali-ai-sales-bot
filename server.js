@@ -1420,6 +1420,46 @@ app.get('/auth/meta', (req, res) => {
     // Redirect the browser to Facebook
     res.redirect(metaAuthUrl);
 });
+app.get('/auth/meta/callback', async (req, res) => {
+    const { code, state } = req.query;
+
+    if (!code) {
+        return res.status(400).send('Authorization code missing from Meta redirect.');
+    }
+
+    try {
+        // 1. Exchange temporary authorization code for long-lived access token
+        const tokenResponse = await fetch(
+            `https://graph.facebook.com/v18.0/oauth/access_token?` +
+            `client_id=${process.env.META_APP_ID}` +
+            `&client_secret=${process.env.META_APP_SECRET}` +
+            `&redirect_uri=${encodeURIComponent('https://nepali-ai-sales-bot.onrender.com/auth/meta/callback')}` +
+            `&code=${code}`
+        );
+        const tokenData = await tokenResponse.json();
+
+        if (tokenData.error) {
+            console.error('Meta Token Exchange Error:', tokenData.error);
+            return res.status(500).json({ error: tokenData.error.message });
+        }
+
+        const userAccessToken = tokenData.access_token;
+        
+        // Parse state if passed from frontend
+        let storeName = '';
+        if (state) {
+            try { storeName = JSON.parse(decodeURIComponent(state)).storeName; } catch (e) {}
+        }
+
+        // TODO: Save tokenData.access_token and storeName to Supabase database here
+
+        // 2. Redirect user back to dashboard or success page
+        res.redirect('/dashboard?status=meta_connected');
+    } catch (err) {
+        console.error('Callback Handler Error:', err);
+        res.status(500).send('Server error processing Meta OAuth callback.');
+    }
+});
 // Start Express Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
