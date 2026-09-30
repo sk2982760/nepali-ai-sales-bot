@@ -205,7 +205,7 @@
   </div>
 
   <script>
-    // 1. Clean Meta hash `#_=_` if redirected from Facebook
+    // Clean Meta hash `#_=_` if present
     if (window.location.hash === '#_=_') {
       if (window.history && window.history.replaceState) {
         window.history.replaceState(null, null, window.location.pathname + window.location.search);
@@ -303,14 +303,14 @@
     async function loadDashboardData() {
       let storeId = getActiveStoreId();
 
-      // If we landed from OAuth success without store_id in URL, try to sync URL
       const urlParams = new URLSearchParams(window.location.search);
+      const isOauthSuccess = urlParams.get('oauth') === 'success';
+
       if (storeId && !urlParams.get('store_id')) {
         urlParams.set('store_id', storeId);
         window.history.replaceState(null, null, `${window.location.pathname}?${urlParams.toString()}`);
       }
 
-      // Update Navigation Links
       if (storeId) {
         const inboxLink = document.getElementById('inbox-nav-link');
         if (inboxLink) inboxLink.href = `/inbox?store_id=${encodeURIComponent(storeId)}`;
@@ -323,7 +323,6 @@
       }
 
       try {
-        // Construct API endpoint with fallback if storeId is missing
         const apiEndpoint = storeId ? `/api/dashboard?store_id=${encodeURIComponent(storeId)}` : `/api/dashboard`;
         const res = await fetch(apiEndpoint, { credentials: 'include' });
         
@@ -340,39 +339,55 @@
           return;
         }
 
-        // Cache the store ID returned by backend if not already set
+        // Output store structure to console for quick verification
+        console.log('Store API Data:', data.store);
+
         if (data.store.id) {
           storeId = data.store.id;
           localStorage.setItem('store_id', storeId);
           setCookie('store_id', storeId);
         }
 
-        document.getElementById('active-store-display').textContent = `${data.store.store_name || 'Store'} (${data.store.id ? data.store.id.substring(0, 8) : ''}...)`;
+        document.getElementById('active-store-display').textContent = `${data.store.store_name || data.store.name || 'Store'} (${data.store.id ? data.store.id.substring(0, 8) : ''}...)`;
 
-        // Update Nav links with recovered storeId
-        if (storeId) {
-          const inboxLink = document.getElementById('inbox-nav-link');
-          if (inboxLink) inboxLink.href = `/inbox?store_id=${encodeURIComponent(storeId)}`;
-          const authFbLink = document.getElementById('auth-fb-link');
-          if (authFbLink && authFbLink.getAttribute('href')) authFbLink.href = `/auth/facebook?store_id=${encodeURIComponent(storeId)}`;
-          const authWaLink = document.getElementById('auth-wa-link');
-          if (authWaLink && authWaLink.getAttribute('href')) authWaLink.href = `/auth/whatsapp?store_id=${encodeURIComponent(storeId)}`;
-        }
+        // Check for Facebook connection using multiple possible column naming conventions
+        const isFbConnected = Boolean(
+          data.store.facebook_page_id || 
+          data.store.fb_page_id || 
+          data.store.facebook_access_token || 
+          data.store.fb_access_token ||
+          data.store.page_access_token ||
+          data.store.facebook_connected ||
+          isOauthSuccess
+        );
 
-        // Facebook & Instagram Connection Status Check
-        if (data.store.facebook_page_id || data.store.facebook_access_token) {
+        // Check for Instagram connection
+        const isIgConnected = Boolean(
+          data.store.instagram_account_id || 
+          data.store.ig_account_id || 
+          data.store.instagram_business_account_id ||
+          data.store.instagram_connected
+        );
+
+        if (isFbConnected) {
           const fbLink = document.getElementById('auth-fb-link');
           if (fbLink) {
-            const hasIg = Boolean(data.store.instagram_account_id);
-            fbLink.innerText = hasIg ? 'FB & IG Connected ✓' : 'FB Connected ✓';
+            fbLink.innerText = isIgConnected ? 'FB & IG Connected ✓' : 'FB Connected ✓';
             fbLink.className = 'px-3 py-1.5 text-xs bg-emerald-600/20 text-emerald-400 font-semibold rounded-lg border border-emerald-500/30 cursor-default inline-flex items-center gap-1';
             fbLink.removeAttribute('href');
             fbLink.onclick = (e) => e.preventDefault();
           }
         }
 
-        // WhatsApp Connection Status Check
-        if (data.store.whatsapp_phone_number_id) {
+        // Check for WhatsApp connection
+        const isWaConnected = Boolean(
+          data.store.whatsapp_phone_number_id || 
+          data.store.wa_phone_number_id ||
+          data.store.whatsapp_access_token ||
+          data.store.whatsapp_connected
+        );
+
+        if (isWaConnected) {
           const waLink = document.getElementById('auth-wa-link');
           if (waLink) {
             waLink.innerText = 'Connected ✓';
