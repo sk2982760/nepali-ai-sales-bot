@@ -1399,7 +1399,27 @@ app.post('/api/orders/update-status', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+app.get('/auth/meta', (req, res) => {
+    const storeName = req.query.store_name;
 
+    if (!storeName) {
+        return res.status(400).send('Store name is required');
+    }
+
+    // Your Meta App credentials (stored in .env)
+    const appId = process.env.META_APP_ID;
+    const redirectUri = encodeURIComponent('https://nepali-ai-sales-bot.onrender.com/auth/meta/callback');
+    const scope = encodeURIComponent('pages_show_list,pages_messaging,instagram_basic,instagram_manage_messages');
+
+    // Pass store_name through the 'state' parameter so Meta returns it after auth
+    const state = encodeURIComponent(JSON.stringify({ storeName }));
+
+    // Facebook OAuth Authorization URL
+    const metaAuthUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}`;
+
+    // Redirect the browser to Facebook
+    res.redirect(metaAuthUrl);
+});
 // Start Express Server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
