@@ -300,27 +300,38 @@
       }
     }
 
-    async function loadDashboardData() {
-      let storeId = getActiveStoreId();
+async function loadDashboardData() {
+  let storeId = getActiveStoreId();
 
-      const urlParams = new URLSearchParams(window.location.search);
-      const isOauthSuccess = urlParams.get('oauth') === 'success';
+  const urlParams = new URLSearchParams(window.location.search);
+  const isOauthSuccess = urlParams.get('oauth') === 'success';
 
-      if (storeId && !urlParams.get('store_id')) {
-        urlParams.set('store_id', storeId);
-        window.history.replaceState(null, null, `${window.location.pathname}?${urlParams.toString()}`);
-      }
+  // Clean up ?oauth=success from the URL while preserving store_id
+  if (isOauthSuccess) {
+    urlParams.delete('oauth');
+    if (storeId && !urlParams.get('store_id')) {
+      urlParams.set('store_id', storeId);
+    }
+    const cleanQuery = urlParams.toString() ? `?${urlParams.toString()}` : '';
+    window.history.replaceState(null, '', `${window.location.pathname}${cleanQuery}`);
+  } else if (storeId && !urlParams.get('store_id')) {
+    urlParams.set('store_id', storeId);
+    window.history.replaceState(null, '', `${window.location.pathname}?${urlParams.toString()}`);
+  }
 
-      if (storeId) {
-        const inboxLink = document.getElementById('inbox-nav-link');
-        if (inboxLink) inboxLink.href = `/inbox?store_id=${encodeURIComponent(storeId)}`;
+  // Update navigation links with active storeId
+  if (storeId) {
+    const inboxLink = document.getElementById('inbox-nav-link');
+    if (inboxLink) inboxLink.href = `/inbox?store_id=${encodeURIComponent(storeId)}`;
 
-        const authFbLink = document.getElementById('auth-fb-link');
-        if (authFbLink) authFbLink.href = `/auth/facebook?store_id=${encodeURIComponent(storeId)}`;
+    const authFbLink = document.getElementById('auth-fb-link');
+    if (authFbLink) authFbLink.href = `/auth/facebook?store_id=${encodeURIComponent(storeId)}`;
 
-        const authWaLink = document.getElementById('auth-wa-link');
-        if (authWaLink) authWaLink.href = `/auth/whatsapp?store_id=${encodeURIComponent(storeId)}`;
-      }
+    const authWaLink = document.getElementById('auth-wa-link');
+    if (authWaLink) authWaLink.href = `/auth/whatsapp?store_id=${encodeURIComponent(storeId)}`;
+  }
+
+  // ... rest of loadDashboardData function remains the same
 
       try {
         const apiEndpoint = storeId ? `/api/dashboard?store_id=${encodeURIComponent(storeId)}` : `/api/dashboard`;
