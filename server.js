@@ -130,7 +130,12 @@ app.post('/api/signup', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email already registered or database error.' });
     }
 
-    res.cookie('store_id', store.id, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
+    res.cookie('store_id', store.id, { 
+  maxAge: 24 * 60 * 60 * 1000, 
+  httpOnly: false,
+  sameSite: 'lax',
+  secure: process.env.NODE_ENV === 'production'
+});
 
     return res.json({
       success: true,
@@ -187,8 +192,12 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid credentials' });
     }
 
-    res.cookie('store_id', store.id, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
-
+    res.cookie('store_id', store.id, { 
+  maxAge: 24 * 60 * 60 * 1000, 
+  httpOnly: false,
+  sameSite: 'lax',
+  secure: process.env.NODE_ENV === 'production'
+});
     return res.json({
       success: true,
       storeId: store.id,
@@ -971,7 +980,12 @@ app.get('/auth/facebook/callback', async (req, res) => {
       }).eq('id', targetStoreId);
     }
 
-    res.cookie('store_id', targetStoreId, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
+    res.cookie('store_id', store.id, { 
+  maxAge: 24 * 60 * 60 * 1000, 
+  httpOnly: false,
+  sameSite: 'lax',
+  secure: process.env.NODE_ENV === 'production'
+});
     res.redirect(`/dashboard?store_id=${targetStoreId}`);
   } catch (err) {
     console.error('FB Auth Error:', err.response?.data || err.message);
@@ -1037,7 +1051,12 @@ app.get('/auth/whatsapp/callback', async (req, res) => {
       }).eq('id', storeId);
     }
 
-    res.cookie('store_id', storeId, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
+    res.cookie('store_id', storeId, { 
+  maxAge: 24 * 60 * 60 * 1000, 
+  httpOnly: false,
+  sameSite: 'lax',
+  secure: process.env.NODE_ENV === 'production'
+});
     res.redirect(`/dashboard?store_id=${storeId}`);
   } catch (err) {
     console.error('WhatsApp Auth Detailed Error:', err.response?.data || err.message);
@@ -1116,7 +1135,7 @@ app.post('/api/connect-all-channels', async (req, res) => {
     const createdStore = await upsertStore(storePayload);
     await saveStoreChannels(createdStore.id, channelList);
 
-    res.cookie('store_id', createdStore.id, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
+    res.cookie('store_id', createdStore.id, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false, sameSite: 'lax', secure: process.env.NODE_ENV === 'production' });
 
     return res.status(200).json({
       success: true,
@@ -1493,8 +1512,12 @@ app.get('/auth/meta/callback', async (req, res) => {
         }
 
         // Set session cookie with the registered store ID
-        res.cookie('store_id', store.id, { maxAge: 24 * 60 * 60 * 1000, httpOnly: false });
-
+       res.cookie('store_id', store.id, { 
+  maxAge: 24 * 60 * 60 * 1000, 
+  httpOnly: false,
+  sameSite: 'lax',
+  secure: process.env.NODE_ENV === 'production'
+});
         // Redirect directly to dashboard with query param and session cookie set
         res.redirect(`/dashboard?store_id=${store.id}&status=success`);
 
