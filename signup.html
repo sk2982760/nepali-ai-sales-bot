@@ -104,44 +104,55 @@
     </div>
   </div>
 
-  <script>
-    // Standard Email Form Sign-up
-    document.getElementById('signupForm').addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const storeName = document.getElementById('storeName').value;
-      const email = document.getElementById('email').value;
-      const password = document.getElementById('password').value;
+<script>
+  // Standard Email Form Sign-up
+  document.getElementById('signupForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const storeName = document.getElementById('storeName').value;
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
 
-      try {
-        const res = await fetch('/api/signup', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ storeName, email, password })
-        });
-        const data = await res.json();
-        if (data.success) {
-          window.location.href = '/dashboard';
-        } else {
-          alert('Sign Up Failed: ' + data.error);
+    try {
+      const res = await fetch('/api/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', // Ensure session cookies are sent/received
+        body: JSON.stringify({ storeName, email, password })
+      });
+      
+      const data = await res.json();
+      
+      if (data.success) {
+        // 1. Store store_id in localStorage if returned by the backend
+        if (data.store_id) {
+          localStorage.setItem('store_id', data.store_id);
         }
-      } catch (err) {
-        alert('Server error during sign up.');
-      }
-    });
 
-    // Automated Meta OAuth Sign-up Redirect
-    document.getElementById('metaSignUpBtn').addEventListener('click', () => {
-      let storeName = document.getElementById('storeName').value.trim();
-      
-      if (!storeName) {
-        storeName = prompt('Please enter your Store Name to link with Meta:');
+        // 2. Redirect to dashboard with explicit store_id param or server redirect path
+        const redirectUrl = data.redirect 
+          || (data.store_id ? `/dashboard?store_id=${encodeURIComponent(data.store_id)}` : '/dashboard');
+        
+        window.location.href = redirectUrl;
+      } else {
+        alert('Sign Up Failed: ' + (data.error || 'Unknown error'));
       }
-      
-      if (!storeName) return;
+    } catch (err) {
+      alert('Server error during sign up.');
+    }
+  });
 
-      // Redirect directly to Meta OAuth route on backend
-      window.location.href = `/auth/meta?store_name=${encodeURIComponent(storeName)}`;
-    });
-  </script>
+  // Automated Meta OAuth Sign-up Redirect
+  document.getElementById('metaSignUpBtn').addEventListener('click', () => {
+    let storeName = document.getElementById('storeName').value.trim();
+    
+    if (!storeName) {
+      storeName = prompt('Please enter your Store Name to link with Meta:');
+    }
+    
+    if (!storeName) return;
+
+    window.location.href = `/auth/meta?store_name=${encodeURIComponent(storeName)}`;
+  });
+</script>
 </body>
 </html>
