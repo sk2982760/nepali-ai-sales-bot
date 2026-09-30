@@ -890,12 +890,17 @@ async function saveStoreChannels(storeId, channels) {
    SOCIAL CHANNEL OAUTH CONNECT ROUTES (FACEBOOK & WHATSAPP)
    ========================================================================== */
 
-// 1. Facebook & Instagram Connect / Sign-Up Route
+// Function to consistently get the exact same redirect URI across both endpoints
+const getRedirectUri = (req) => {
+  return process.env.FB_REDIRECT_URI || 'https://nepali-ai-sales-bot.onrender.com/auth/facebook/callback';
+};
+
+// 1. Initiate Facebook OAuth
 app.get('/auth/facebook', (req, res) => {
   const { store_id, store_name } = req.query;
 
   const appId = process.env.FB_APP_ID || process.env.META_APP_ID;
-  const rawRedirectUri = process.env.FB_REDIRECT_URI || `https://${req.get('host')}/auth/facebook/callback`;
+  const redirectUri = getRedirectUri(req);
   const scopes = [
     'pages_show_list',
     'pages_messaging',
@@ -905,23 +910,21 @@ app.get('/auth/facebook', (req, res) => {
     'business_management'
   ].join(',');
 
-  // Safe base64url encoding for state JSON payload
   const statePayload = JSON.stringify({
     store_id: store_id || null,
     store_name: store_name || null
   });
   const state = Buffer.from(statePayload).toString('base64url');
 
-  const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(rawRedirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
+  const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
 
   res.redirect(fbAuthUrl);
 });
 
-// 2. Facebook & Instagram OAuth Callback Handler
+// 2. OAuth Callback Handler
 app.get('/auth/facebook/callback', async (req, res) => {
   const { code, state } = req.query;
 
-  // Decode state payload
   let targetStoreId = req.cookies.store_id;
   if (state) {
     try {
@@ -941,21 +944,21 @@ app.get('/auth/facebook/callback', async (req, res) => {
   try {
     const appId = process.env.FB_APP_ID || process.env.META_APP_ID;
     const appSecret = process.env.FB_APP_SECRET || process.env.META_APP_SECRET;
-    const redirectUri = process.env.FB_REDIRECT_URI || `https://${req.get('host')}/auth/facebook/callback`;
+    const redirectUri = getRedirectUri(req); // MUST MATCH /auth/facebook EXACTLY
 
-    // 1. Exchange authorization code for User Access Token
+    // 1. Exchange code for access token
     const tokenUrl = `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
     const tokenRes = await fetch(tokenUrl);
     const tokenData = await tokenRes.json();
 
     if (tokenData.error) {
-      console.error('FB Token Error:', tokenData.error);
+      console.error('Facebook Token Exchange Error:', tokenData.error);
       return res.status(400).send(`OAuth Error: ${tokenData.error.message}`);
     }
 
     const userAccessToken = tokenData.access_token;
 
-    // 2. Fetch Facebook Pages AND linked Instagram Business Accounts
+    // 2. Query pages and connected Instagram account
     const pagesUrl = `https://graph.facebook.com/v20.0/me/accounts?fields=id,name,access_token,instagram_business_account&access_token=${userAccessToken}`;
     const pagesRes = await fetch(pagesUrl);
     const pagesData = await pagesRes.json();
@@ -965,15 +968,12 @@ app.get('/auth/facebook/callback', async (req, res) => {
       return res.status(400).send('No Facebook Pages found for this account.');
     }
 
-    // Select primary page (first page returned)
     const primaryPage = pages[0];
     const pageId = primaryPage.id;
     const pageAccessToken = primaryPage.access_token;
-
-    // Extract linked Instagram Account ID
     const instagramId = primaryPage.instagram_business_account ? primaryPage.instagram_business_account.id : null;
 
-    // 3. Update Supabase Store with both Facebook & Instagram credentials
+    // 3. Save to database
     const { error: dbError } = await supabase
       .from('stores')
       .update({
@@ -986,17 +986,17 @@ app.get('/auth/facebook/callback', async (req, res) => {
 
     if (dbError) throw dbError;
 
-    // 4. Set Session Cookie
+    // 4. Set cookie and complete redirect
     res.cookie('store_id', targetStoreId, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: true,
       sameSite: 'lax',
       maxAge: 24 * 60 * 60 * 1000
     });
 
     return res.redirect('/dashboard.html?oauth=success');
   } catch (err) {
-    console.error('Meta Combined Auth Error:', err);
+    console.error('Meta OAuth Handler Error:', err);
     return res.status(500).send('Failed to connect Facebook & Instagram.');
   }
 });
