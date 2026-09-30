@@ -64,7 +64,7 @@
               <p class="text-xs text-slate-500">Connect Messenger and Instagram Direct</p>
             </div>
           </div>
-          <a id="auth-fb-link" href="/auth/facebook" class="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 font-semibold rounded-lg text-white transition">
+          <a id="auth-fb-link" href="/auth/facebook" onclick="preserveStoreBeforeOAuth(event)" class="px-3 py-1.5 text-xs bg-indigo-600 hover:bg-indigo-500 font-semibold rounded-lg text-white transition">
             Connect
           </a>
         </div>
@@ -78,7 +78,7 @@
               <p class="text-xs text-slate-500">Connect WhatsApp Cloud API</p>
             </div>
           </div>
-          <a id="auth-wa-link" href="/auth/whatsapp" class="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 font-semibold rounded-lg text-white transition">
+          <a id="auth-wa-link" href="/auth/whatsapp" onclick="preserveStoreBeforeOAuth(event)" class="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 font-semibold rounded-lg text-white transition">
             Connect
           </a>
         </div>
@@ -205,7 +205,7 @@
   </div>
 
   <script>
-    // Remove Meta's trailing #_=_ hash if present
+    // 1. Clean Meta hash `#_=_` if redirected from Facebook
     if (window.location.hash === '#_=_') {
       if (window.history && window.history.replaceState) {
         window.history.replaceState(null, null, window.location.pathname + window.location.search);
@@ -215,6 +215,11 @@
     }
 
     let rawOrders = [];
+
+    function setCookie(name, value, days = 7) {
+      const expires = new Date(Date.now() + days * 864e5).toUTCString();
+      document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`;
+    }
 
     function getCookie(name) {
       const value = `; ${document.cookie}`;
@@ -226,12 +231,27 @@
     function getActiveStoreId() {
       const urlParams = new URLSearchParams(window.location.search);
       const urlStoreId = urlParams.get('store_id');
-      if (urlStoreId) return urlStoreId;
+      if (urlStoreId) {
+        localStorage.setItem('store_id', urlStoreId);
+        setCookie('store_id', urlStoreId);
+        return urlStoreId;
+      }
 
       const localStoreId = localStorage.getItem('store_id');
-      if (localStoreId) return localStoreId;
+      if (localStoreId) {
+        setCookie('store_id', localStoreId);
+        return localStoreId;
+      }
 
       return getCookie('store_id');
+    }
+
+    function preserveStoreBeforeOAuth(e) {
+      const currentStoreId = getActiveStoreId();
+      if (currentStoreId) {
+        localStorage.setItem('store_id', currentStoreId);
+        setCookie('store_id', currentStoreId);
+      }
     }
 
     function openProductModal() { 
@@ -281,29 +301,31 @@
     }
 
     async function loadDashboardData() {
-      const storeId = getActiveStoreId();
+      let storeId = getActiveStoreId();
 
-      if (!storeId) {
-        console.warn('No active store ID found. Redirecting to login...');
-        window.location.href = '/login';
-        return;
+      // If we landed from OAuth success without store_id in URL, try to sync URL
+      const urlParams = new URLSearchParams(window.location.search);
+      if (storeId && !urlParams.get('store_id')) {
+        urlParams.set('store_id', storeId);
+        window.history.replaceState(null, null, `${window.location.pathname}?${urlParams.toString()}`);
       }
 
-      localStorage.setItem('store_id', storeId);
-      
-      const inboxLink = document.getElementById('inbox-nav-link');
-      if (inboxLink) inboxLink.href = `/inbox?store_id=${encodeURIComponent(storeId)}`;
+      // Update Navigation Links
+      if (storeId) {
+        const inboxLink = document.getElementById('inbox-nav-link');
+        if (inboxLink) inboxLink.href = `/inbox?store_id=${encodeURIComponent(storeId)}`;
 
-      const authFbLink = document.getElementById('auth-fb-link');
-      if (authFbLink) authFbLink.href = `/auth/facebook?store_id=${encodeURIComponent(storeId)}`;
+        const authFbLink = document.getElementById('auth-fb-link');
+        if (authFbLink) authFbLink.href = `/auth/facebook?store_id=${encodeURIComponent(storeId)}`;
 
-      const authWaLink = document.getElementById('auth-wa-link');
-      if (authWaLink) authWaLink.href = `/auth/whatsapp?store_id=${encodeURIComponent(storeId)}`;
+        const authWaLink = document.getElementById('auth-wa-link');
+        if (authWaLink) authWaLink.href = `/auth/whatsapp?store_id=${encodeURIComponent(storeId)}`;
+      }
 
       try {
-        const res = await fetch(`/api/dashboard?store_id=${encodeURIComponent(storeId)}`, {
-          credentials: 'include'
-        });
+        // Construct API endpoint with fallback if storeId is missing
+        const apiEndpoint = storeId ? `/api/dashboard?store_id=${encodeURIComponent(storeId)}` : `/api/dashboard`;
+        const res = await fetch(apiEndpoint, { credentials: 'include' });
         
         if (res.status === 401 || res.status === 403) {
           localStorage.removeItem('store_id');
@@ -318,7 +340,24 @@
           return;
         }
 
+        // Cache the store ID returned by backend if not already set
+        if (data.store.id) {
+          storeId = data.store.id;
+          localStorage.setItem('store_id', storeId);
+          setCookie('store_id', storeId);
+        }
+
         document.getElementById('active-store-display').textContent = `${data.store.store_name || 'Store'} (${data.store.id ? data.store.id.substring(0, 8) : ''}...)`;
+
+        // Update Nav links with recovered storeId
+        if (storeId) {
+          const inboxLink = document.getElementById('inbox-nav-link');
+          if (inboxLink) inboxLink.href = `/inbox?store_id=${encodeURIComponent(storeId)}`;
+          const authFbLink = document.getElementById('auth-fb-link');
+          if (authFbLink && authFbLink.getAttribute('href')) authFbLink.href = `/auth/facebook?store_id=${encodeURIComponent(storeId)}`;
+          const authWaLink = document.getElementById('auth-wa-link');
+          if (authWaLink && authWaLink.getAttribute('href')) authWaLink.href = `/auth/whatsapp?store_id=${encodeURIComponent(storeId)}`;
+        }
 
         // Facebook & Instagram Connection Status Check
         if (data.store.facebook_page_id || data.store.facebook_access_token) {
@@ -492,9 +531,8 @@
 
       if (!ordersToExport || ordersToExport.length === 0) {
         try {
-          const res = await fetch(`/api/dashboard?store_id=${encodeURIComponent(storeId)}`, {
-            credentials: 'include'
-          });
+          const apiEndpoint = storeId ? `/api/dashboard?store_id=${encodeURIComponent(storeId)}` : `/api/dashboard`;
+          const res = await fetch(apiEndpoint, { credentials: 'include' });
           const data = await res.json();
           ordersToExport = data.orders || [];
         } catch (err) {
