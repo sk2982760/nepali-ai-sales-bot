@@ -11,7 +11,19 @@ const cookieParser = require('cookie-parser');
 // Ensure process.env.SUPABASE_KEY matches your Render environment variable name
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_KEY || process.env.SUPABASE_ANON_KEY;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || SUPABASE_ANON_KEY;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SUPABASE_URL) {
+  throw new Error('SUPABASE_URL is missing from environment variables.');
+}
+
+if (!SUPABASE_ANON_KEY) {
+  throw new Error('SUPABASE_KEY / SUPABASE_ANON_KEY is missing from environment variables.');
+}
+
+if (!SUPABASE_SERVICE_ROLE_KEY) {
+  throw new Error('SUPABASE_SERVICE_ROLE_KEY is missing from environment variables.');
+}
 
 // 1. Auth client configured specifically for Node.js (disables browser storage)
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -261,7 +273,7 @@ async function getStoreByPlatformId({ whatsappPhoneId, facebookPageId, instagram
   if (!targetId) return null;
 
   try {
-    const { data: channel, error: channelErr } = await supabase
+    const { data: channel, error: channelErr } = await supabaseAdmin
       .from('store_channels')
       .select('*, stores(*)')
       .eq('channel_id', targetId)
@@ -279,7 +291,7 @@ async function getStoreByPlatformId({ whatsappPhoneId, facebookPageId, instagram
       }
     }
 
-    let query = supabase.from('stores').select('*');
+    let query = supabaseAdmin.from('stores').select('*');
     if (whatsappPhoneId) {
       query = query.eq('whatsapp_phone_number_id', String(whatsappPhoneId).trim());
     } else if (facebookPageId) {
@@ -809,79 +821,97 @@ async function upsertStore(storePayload) {
   let existingStore = null;
 
   if (storePayload.facebook_page_id) {
-    const { data } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('stores')
       .select('*')
       .eq('facebook_page_id', String(storePayload.facebook_page_id))
       .maybeSingle();
+
+    if (error) throw error;
     if (data) existingStore = data;
   }
 
   if (!existingStore && storePayload.whatsapp_phone_number_id) {
-    const { data } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('stores')
       .select('*')
       .eq('whatsapp_phone_number_id', String(storePayload.whatsapp_phone_number_id))
       .maybeSingle();
+
+    if (error) throw error;
     if (data) existingStore = data;
   }
 
   if (!existingStore && storePayload.instagram_account_id) {
-    const { data } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('stores')
       .select('*')
       .eq('instagram_account_id', String(storePayload.instagram_account_id))
       .maybeSingle();
+
+    if (error) throw error;
     if (data) existingStore = data;
   }
 
   if (existingStore) {
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('stores')
       .update(storePayload)
       .eq('id', existingStore.id)
-      .select();
-    if (error) throw error;
-    return data[0];
-  } else {
-    const { data, error } = await supabase
-      .from('stores')
-      .insert([storePayload])
-      .select();
+      .select()
+      .single();
 
     if (error) throw error;
-    return data[0];
+    return data;
   }
+
+  const { data, error } = await supabaseAdmin
+    .from('stores')
+    .insert([storePayload])
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
 }
 
 async function saveStoreChannels(storeId, channels) {
   for (const ch of channels) {
-    if (ch.channel_id) {
-      const channelRow = {
-        store_id: String(storeId),
-        channel_type: ch.channel_type,
-        channel_id: String(ch.channel_id).trim()
-      };
-      if (ch.access_token) {
-        channelRow.access_token = String(ch.access_token).trim();
-      }
+    if (!ch.channel_id) continue;
 
-      const { data: existingChannel } = await supabase
+    const channelRow = {
+      store_id: String(storeId),
+      channel_type: ch.channel_type,
+      channel_id: String(ch.channel_id).trim()
+    };
+
+    if (ch.access_token) {
+      channelRow.access_token = String(ch.access_token).trim();
+    }
+
+    const { data: existingChannel, error: lookupError } = await supabaseAdmin
+      .from('store_channels')
+      .select('id')
+      .eq('channel_id', channelRow.channel_id)
+      .maybeSingle();
+
+    if (lookupError) {
+      throw lookupError;
+    }
+
+    if (existingChannel) {
+      const { error: updateError } = await supabaseAdmin
         .from('store_channels')
-        .select('id')
-        .eq('channel_id', channelRow.channel_id)
-        .maybeSingle();
+        .update(channelRow)
+        .eq('id', existingChannel.id);
 
-      if (existingChannel) {
-        await supabase
-          .from('store_channels')
-          .update(channelRow)
-          .eq('id', existingChannel.id);
-      } else {
-        await supabase
-          .from('store_channels')
-          .insert([channelRow]);
-      }
+      if (updateError) throw updateError;
+    } else {
+      const { error: insertError } = await supabaseAdmin
+        .from('store_channels')
+        .insert([channelRow]);
+
+      if (insertError) throw insertError;
     }
   }
 }
@@ -924,20 +954,27 @@ app.get('/auth/facebook', (req, res) => {
 app.get('/auth/facebook/callback', async (req, res) => {
   const { code, state } = req.query;
 
-  let targetStoreId = req.cookies.store_id;
+  let targetStoreId = req.cookies?.store_id || null;
+
+  // Recover the original dashboard store ID from OAuth state.
   if (state) {
     try {
-      const decodedState = JSON.parse(Buffer.from(state, 'base64url').toString('utf8'));
+      const decodedState = JSON.parse(
+        Buffer.from(String(state), 'base64url').toString('utf8')
+      );
+
       if (decodedState.store_id) {
         targetStoreId = decodedState.store_id;
       }
     } catch (err) {
-      console.error('Failed to parse OAuth state payload:', err);
+      console.error('Failed to parse Facebook OAuth state:', err);
     }
   }
 
   if (!targetStoreId || !code) {
-    return res.status(400).send('Failed to complete Facebook OAuth: Missing parameters or Store ID.');
+    return res.status(400).send(
+      'Failed to complete Facebook OAuth: Missing authorization code or Store ID.'
+    );
   }
 
   try {
@@ -945,54 +982,163 @@ app.get('/auth/facebook/callback', async (req, res) => {
     const appSecret = process.env.FB_APP_SECRET || process.env.META_APP_SECRET;
     const redirectUri = getRedirectUri(req);
 
-    const tokenUrl = `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
+    if (!appId || !appSecret) {
+      throw new Error('Facebook OAuth app credentials are missing.');
+    }
+
+    // 1. Exchange authorization code for a user access token.
+    const tokenUrl =
+      `https://graph.facebook.com/v20.0/oauth/access_token` +
+      `?client_id=${encodeURIComponent(appId)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&client_secret=${encodeURIComponent(appSecret)}` +
+      `&code=${encodeURIComponent(code)}`;
+
     const tokenRes = await fetch(tokenUrl);
     const tokenData = await tokenRes.json();
 
-    if (tokenData.error) {
-      console.error('Facebook Token Exchange Error:', tokenData.error);
-      return res.status(400).send(`OAuth Error: ${tokenData.error.message}`);
+    if (!tokenRes.ok || tokenData.error) {
+      console.error('Facebook Token Exchange Error:', tokenData);
+      return res.status(400).send(
+        `OAuth Error: ${tokenData.error?.message || 'Token exchange failed.'}`
+      );
     }
 
     const userAccessToken = tokenData.access_token;
 
-    const pagesUrl = `https://graph.facebook.com/v20.0/me/accounts?fields=id,name,access_token,instagram_business_account&access_token=${userAccessToken}`;
+    if (!userAccessToken) {
+      throw new Error('Facebook did not return a user access token.');
+    }
+
+    // 2. Get Facebook Pages connected to this Meta account.
+    const pagesUrl =
+      `https://graph.facebook.com/v20.0/me/accounts` +
+      `?fields=id,name,access_token,instagram_business_account` +
+      `&access_token=${encodeURIComponent(userAccessToken)}`;
+
     const pagesRes = await fetch(pagesUrl);
     const pagesData = await pagesRes.json();
 
-    const pages = pagesData.data || [];
-    if (pages.length === 0) {
-      return res.status(400).send('No Facebook Pages found for this account.');
+    if (!pagesRes.ok || pagesData.error) {
+      console.error('Facebook Pages API Error:', pagesData);
+      return res.status(400).send(
+        pagesData.error?.message || 'Could not retrieve Facebook Pages.'
+      );
     }
 
-    const primaryPage = pages[0];
-    const pageId = primaryPage.id;
-    const pageAccessToken = primaryPage.access_token;
-    const instagramId = primaryPage.instagram_business_account ? primaryPage.instagram_business_account.id : null;
+    const pages = pagesData.data || [];
 
-    const { error: dbError } = await supabase
+    if (pages.length === 0) {
+      return res.status(400).send(
+        'No Facebook Pages found for this Meta account.'
+      );
+    }
+
+    // 3. Select the first available Facebook Page.
+    const primaryPage = pages[0];
+
+    const pageId = String(primaryPage.id || '').trim();
+    const pageAccessToken = String(primaryPage.access_token || '').trim() || null;
+    const instagramId = primaryPage.instagram_business_account?.id
+      ? String(primaryPage.instagram_business_account.id).trim()
+      : null;
+
+    if (!pageId || !pageAccessToken) {
+      throw new Error(
+        'Facebook Page information or Page Access Token was not returned by Meta.'
+      );
+    }
+
+    // 4. Confirm that the store the dashboard was using still exists.
+    const { data: targetStore, error: targetStoreError } = await supabaseAdmin
+      .from('stores')
+      .select('id, store_name')
+      .eq('id', targetStoreId)
+      .maybeSingle();
+
+    if (targetStoreError) {
+      throw targetStoreError;
+    }
+
+    if (!targetStore) {
+      return res.status(404).send(
+        `Store not found for store_id: ${targetStoreId}`
+      );
+    }
+
+    // 5. Save the Facebook/Instagram connection into the EXISTING store.
+    // Uses the same column consumed by the webhook/inbox code.
+    const { data: updatedStore, error: dbError } = await supabaseAdmin
       .from('stores')
       .update({
-        facebook_access_token: pageAccessToken,
+        facebook_page_access_token: pageAccessToken,
         facebook_page_id: pageId,
         instagram_account_id: instagramId,
         facebook_pages: pages
       })
-      .eq('id', targetStoreId);
+      .eq('id', targetStoreId)
+      .select()
+      .single();
 
-    if (dbError) throw dbError;
+    if (dbError) {
+      console.error('Facebook connection database error:', dbError);
+      throw dbError;
+    }
 
-    res.cookie('store_id', targetStoreId, {
+    if (!updatedStore) {
+      throw new Error(
+        `No store was updated for store_id: ${targetStoreId}`
+      );
+    }
+
+    // 6. Persist channel rows for Messenger and Instagram.
+    const channels = [
+      {
+        channel_type: 'messenger',
+        channel_id: pageId,
+        access_token: pageAccessToken
+      }
+    ];
+
+    if (instagramId) {
+      channels.push({
+        channel_type: 'instagram',
+        channel_id: instagramId,
+        access_token: pageAccessToken
+      });
+    }
+
+    await saveStoreChannels(targetStoreId, channels);
+
+    // 7. Keep the correct store in the browser session.
+    res.cookie('store_id', String(targetStoreId), {
       httpOnly: false,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       maxAge: 24 * 60 * 60 * 1000
     });
 
-    return res.redirect('/dashboard?oauth=success');
+    console.log('======================================');
+    console.log('✅ FACEBOOK / INSTAGRAM CONNECTED');
+    console.log('Store ID:', targetStoreId);
+    console.log('Facebook Page ID:', pageId);
+    console.log('Instagram Account ID:', instagramId || 'None');
+    console.log('Page access token saved:', Boolean(pageAccessToken));
+    console.log('======================================');
+
+    return res.redirect(
+      `/dashboard?store_id=${encodeURIComponent(targetStoreId)}&oauth=success`
+    );
+
   } catch (err) {
-    console.error('Meta OAuth Handler Error:', err);
-    return res.status(500).send('Failed to connect Facebook & Instagram.');
+    console.error(
+      '❌ Meta OAuth Handler Error:',
+      err.response?.data || err.message || err
+    );
+
+    return res.status(500).send(
+      `Failed to connect Facebook & Instagram: ${err.response?.data?.error?.message || err.message || 'Unknown error'}`
+    );
   }
 });
 
@@ -1442,88 +1588,6 @@ app.post('/api/orders/update-status', async (req, res) => {
     console.error('Error updating order status:', err.message);
     return res.status(500).json({ error: err.message });
   }
-});
-
-app.get('/auth/meta', (req, res) => {
-    const storeName = req.query.store_name;
-
-    if (!storeName) {
-        return res.status(400).send('Store name is required');
-    }
-
-    const appId = process.env.META_APP_ID;
-    const redirectUri = encodeURIComponent('https://nepali-ai-sales-bot.onrender.com/auth/meta/callback');
-    const scope = encodeURIComponent('pages_show_list,pages_messaging,instagram_basic,instagram_manage_messages');
-
-    const state = encodeURIComponent(JSON.stringify({ storeName }));
-    const metaAuthUrl = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}`;
-
-    res.redirect(metaAuthUrl);
-});
-
-app.get('/auth/meta/callback', async (req, res) => {
-    const { code, state } = req.query;
-
-    if (!code) {
-        return res.status(400).send('Authorization code missing.');
-    }
-
-    try {
-        const tokenResponse = await fetch(
-            `https://graph.facebook.com/v18.0/oauth/access_token?` +
-            `client_id=${process.env.META_APP_ID}` +
-            `&client_secret=${process.env.META_APP_SECRET}` +
-            `&redirect_uri=${encodeURIComponent('https://nepali-ai-sales-bot.onrender.com/auth/meta/callback')}` +
-            `&code=${code}`
-        );
-        const tokenData = await tokenResponse.json();
-
-        if (tokenData.error) {
-            console.error('Meta Token Exchange Error:', tokenData.error);
-            return res.status(400).json({ error: tokenData.error.message });
-        }
-
-        const userAccessToken = tokenData.access_token;
-
-        const profileRes = await fetch(`https://graph.facebook.com/me?fields=id,name,email&access_token=${userAccessToken}`);
-        const profile = await profileRes.json();
-
-        let storeName = '';
-        if (state) {
-            try { storeName = JSON.parse(decodeURIComponent(state)).storeName; } catch (e) {}
-        }
-
-        const email = profile.email || `${profile.id}@facebook.com`;
-        
-        const { data: store, error: dbError } = await supabaseAdmin
-            .from('stores')
-            .upsert({
-                facebook_id: profile.id,
-                email: email,
-                store_name: storeName || profile.name,
-                access_token: userAccessToken
-            }, { onConflict: 'facebook_id' })
-            .select()
-            .single();
-
-        if (dbError) {
-            console.error('Database Error:', dbError);
-            return res.status(500).json({ error: dbError.message });
-        }
-
-        res.cookie('store_id', store.id, { 
-          maxAge: 24 * 60 * 60 * 1000, 
-          httpOnly: false,
-          sameSite: 'lax',
-          secure: process.env.NODE_ENV === 'production'
-        });
-
-        res.redirect(`/dashboard?store_id=${store.id}&status=success`);
-
-    } catch (err) {
-        console.error('Callback Error:', err);
-        res.status(500).send(`Server error: ${err.message}`);
-    }
 });
 
 // Start Express Server
