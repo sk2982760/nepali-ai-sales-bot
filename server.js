@@ -100,37 +100,35 @@ function cleanAiResponse(text) {
    ========================================================================== */
 
 app.post('/api/signup', async (req, res) => {
-  try {
-    const { storeName, email, password } = req.body;
+  const { storeName, email, password } = req.body;
 
-    if (!storeName || !email || !password) {
-      return res.status(400).json({ success: false, error: 'All fields are required.' });
+  if (!storeName || !email || !password) {
+    return res.status(400).json({ error: 'All fields are required.' });
+  }
+
+  try {
+    const { data: existingStore } = await supabase
+      .from('stores')
+      .select('id')
+      .eq('email', email)
+      .single();
+
+    if (existingStore) {
+      return res.status(400).json({ error: 'Email is already registered.' });
     }
 
-    const cleanEmail = email.trim().toLowerCase();
-
-    // 1. Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    // 2. Insert directly into stores table
-    const { data: store, error: storeError } = await supabaseAdmin
+    const { data: store, error } = await supabase
       .from('stores')
-      .insert([
-        {
-          store_name: storeName.trim(),
-          email: cleanEmail,
-          password: hashedPassword
-        }
-      ])
+      .insert([{ store_name: storeName, email, password: hashedPassword }])
       .select()
       .single();
 
-    if (storeError) {
-      console.error("Signup DB Error:", storeError.message);
-      return res.status(400).json({ success: false, error: 'Email already registered or database error.' });
+    if (error || !store) {
+      throw error || new Error('Failed to create store account.');
     }
 
-   // Set HTTP-only session cookie for the new store
+    // Set HTTP-only session cookie
     res.cookie('store_id', store.id, {
       httpOnly: true,
       sameSite: 'lax',
@@ -144,14 +142,9 @@ app.post('/api/signup', async (req, res) => {
       store_id: store.id,
       store: store
     });
-  } catch (error) {
-    console.error('Signup error:', error);
-    return res.status(500).json({ error: 'Failed to create account' });
-  }
-
   } catch (err) {
-    console.error("Signup Catch Error:", err);
-    return res.status(500).json({ success: false, error: 'Internal server error.' });
+    console.error('Signup error:', err);
+    return res.status(500).json({ error: 'Failed to create account' });
   }
 });
 
