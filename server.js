@@ -1440,7 +1440,7 @@ app.get('/auth/meta/callback', async (req, res) => {
 
         if (tokenData.error) {
             console.error('Meta Token Exchange Error:', tokenData.error);
-            return res.status(500).json({ error: tokenData.error.message });
+            return res.status(400).json({ error: tokenData.error.message });
         }
 
         const userAccessToken = tokenData.access_token;
@@ -1454,33 +1454,30 @@ app.get('/auth/meta/callback', async (req, res) => {
             try { storeName = JSON.parse(decodeURIComponent(state)).storeName; } catch (e) {}
         }
 
-        // 3. Upsert store/user in Supabase
-        const email = profile.email || `${profile.id}@facebook.user`;
-        const { data: user, error: dbError } = await supabaseAdmin
-            .from('stores') // adjust table name if needed (e.g., 'users')
+        // 3. Save or update store details in Supabase
+        const email = profile.email || `${profile.id}@facebook.com`;
+        
+        // Save to Supabase (adjust 'stores' to your actual table name if different)
+        const { error: dbError } = await supabaseAdmin
+            .from('stores')
             .upsert({
                 facebook_id: profile.id,
                 email: email,
                 store_name: storeName || profile.name,
                 access_token: userAccessToken
-            }, { onConflict: 'facebook_id' })
-            .select()
-            .single();
+            }, { onConflict: 'facebook_id' });
 
-        if (dbError) throw dbError;
+        if (dbError) {
+            console.error('Database Error:', dbError);
+            return res.status(500).json({ error: dbError.message });
+        }
 
-        // 4. Set session cookie or JWT token so /dashboard recognizes the user as logged in
-        // Example using Express session cookie:
-        req.session.userId = user.id; 
-        
-        // OR if using cookies directly:
-        // res.cookie('token', generateAuthToken(user), { httpOnly: true, secure: true });
+        // 4. Redirect directly to dashboard or pass success status
+        res.redirect('/dashboard?status=success');
 
-        // 5. Redirect to dashboard
-        res.redirect('/dashboard');
     } catch (err) {
-        console.error('Callback Auth Error:', err);
-        res.status(500).send('Server error during Meta login.');
+        console.error('Callback Error:', err);
+        res.status(500).send(`Server error: ${err.message}`);
     }
 });
 // Start Express Server
