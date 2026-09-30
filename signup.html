@@ -75,7 +75,7 @@
     <p>Connect your business channels & automate sales</p>
 
     <!-- One-Click Meta Registration -->
-    <button class="btn btn-meta" id="metaSignUpBtn">
+    <button class="btn btn-meta" id="metaSignUpBtn" type="button">
       <svg width="18" height="18" fill="currentColor" viewBox="0 0 24 24"><path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/></svg>
       Sign Up with Meta
     </button>
@@ -105,7 +105,7 @@
   </div>
 
   <script>
-    // Standard Form Sign-up
+    // Standard Email Form Sign-up
     document.getElementById('signupForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const storeName = document.getElementById('storeName').value;
@@ -129,28 +129,18 @@
       }
     });
 
-    // Meta One-Click Button Handler
+    // Automated Meta OAuth Sign-up Redirect
     document.getElementById('metaSignUpBtn').addEventListener('click', () => {
-      const storeName = prompt('Enter your Store Name to link with Meta:');
+      let storeName = document.getElementById('storeName').value.trim();
+      
+      if (!storeName) {
+        storeName = prompt('Please enter your Store Name to link with Meta:');
+      }
+      
       if (!storeName) return;
 
-      const userToken = prompt('Paste your Meta User Access Token (from Graph API Explorer):');
-      if (!userToken) return;
-
-      fetch('/api/connect-all-channels', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ store_name: storeName, user_access_token: userToken })
-      })
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) {
-          alert(`Successfully connected ${data.connectedChannels.join(', ')}! Redirecting...`);
-          window.location.href = '/dashboard';
-        } else {
-          alert('Meta Sign Up Failed: ' + data.error);
-        }
-      });
+      // Redirect directly to Meta OAuth route on backend
+      window.location.href = `/auth/meta?store_name=${encodeURIComponent(storeName)}`;
     });
   </script>
 </body>

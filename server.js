@@ -396,6 +396,7 @@ async function saveOrder({ store_id, customer_name, phone_number, delivery_locat
 
   return { success: true, order: orderData[0] };
 }
+
 const orderTool = {
   type: 'function',
   function: {
@@ -482,13 +483,11 @@ EXAMPLES:
 }
 
 async function processCustomerMessage(userMessage, senderPsid, store) {
-  // 1. Fetch current product catalog for this store from Supabase
   const { data: products } = await supabase
     .from('products')
     .select('*')
     .eq('store_id', store.id);
 
-  // 2. Format catalog into readable text for the AI
   let inventoryContext = "No products available in the catalog currently.";
   if (products && products.length > 0) {
     inventoryContext = products.map(p => {
@@ -503,9 +502,6 @@ async function processCustomerMessage(userMessage, senderPsid, store) {
   const chatHistory = await getChatHistory(store.id, senderPsid);
   const lowerMsg = userMessage.toLowerCase().trim();
 
-  /* --------------------------------------------------------------------------
-     FEATURE 1: AUTOMATED COD CONFIRMATION INTERCEPTION ("YES" / "CONFIRM")
-     -------------------------------------------------------------------------- */
   const { data: pendingOrder } = await supabase
     .from('orders')
     .select('*')
@@ -542,7 +538,6 @@ async function processCustomerMessage(userMessage, senderPsid, store) {
 
   const shouldDisableTools = isOrderAlreadyConfirmed || orderDeclinedOrDelayed || isSimpleAck;
 
-  // 3. Inject inventory context directly into System Prompt
   const systemPrompt = `You are a polite, natural, and helpful sales assistant for "${store.store_name || 'our shop'}" in Kathmandu, Nepal.
 
 CURRENT LIVE INVENTORY:
@@ -874,25 +869,44 @@ async function saveStoreChannels(storeId, channels) {
    SOCIAL CHANNEL OAUTH CONNECT ROUTES (FACEBOOK & WHATSAPP)
    ========================================================================== */
 
-// 1. Facebook & Instagram Connect Route
+// 1. Facebook & Instagram Connect / Sign-Up Route
 app.get('/auth/facebook', (req, res) => {
-  const storeId = req.query.store_id;
-  if (!storeId) return res.status(400).send('Missing store_id parameter.');
+  const { store_id, store_name } = req.query;
 
   const appId = process.env.META_APP_ID;
   const redirectUri = encodeURIComponent(`https://${req.get('host')}/auth/facebook/callback`);
   const scope = encodeURIComponent('pages_show_list,pages_messaging,pages_read_engagement,instagram_basic,instagram_manage_messages');
 
-  const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${storeId}`;
+  // Encode state as base64 JSON payload
+  const statePayload = JSON.stringify({
+    store_id: store_id || null,
+    store_name: store_name || null
+  });
+  const state = Buffer.from(statePayload).toString('base64');
+
+  const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}`;
   res.redirect(fbAuthUrl);
 });
 
-// Facebook Callback Handler
+// Facebook & Instagram OAuth Callback Handler
 app.get('/auth/facebook/callback', async (req, res) => {
-  const { code, state: storeId } = req.query;
-  if (!code || !storeId) return res.status(400).send('Authentication failed or store_id missing.');
+  const { code, state } = req.query;
+  if (!code) return res.status(400).send('Authentication failed: missing authorization code.');
 
   try {
+    let store_id = null;
+    let store_name = null;
+
+    if (state) {
+      try {
+        const decoded = JSON.parse(Buffer.from(state, 'base64').toString('utf-8'));
+        store_id = decoded.store_id;
+        store_name = decoded.store_name;
+      } catch (e) {
+        store_id = state; // Fallback for plain string store_id
+      }
+    }
+
     const redirectUri = `https://${req.get('host')}/auth/facebook/callback`;
     
     const tokenRes = await axios.get('https://graph.facebook.com/v20.0/oauth/access_token', {
@@ -911,15 +925,40 @@ app.get('/auth/facebook/callback', async (req, res) => {
     });
 
     const page = pageRes.data?.data?.[0];
-    if (page) {
+    if (!page) {
+      return res.status(400).send('No Facebook Page found under this account.');
+    }
+
+    let targetStoreId = store_id;
+
+    // If signing up as a NEW store, create store in Supabase automatically
+    if (!targetStoreId && store_name) {
+      const slug = store_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const storePayload = {
+        store_name: store_name.trim(),
+        slug: slug,
+        facebook_page_id: String(page.id),
+        facebook_page_access_token: page.access_token,
+        instagram_account_id: page.instagram_business_account?.id ? String(page.instagram_business_account.id) : null
+      };
+
+      const createdStore = await upsertStore(storePayload);
+      targetStoreId = createdStore.id;
+
+      await saveStoreChannels(targetStoreId, [
+        { channel_type: 'messenger', channel_id: page.id, access_token: page.access_token },
+        ...(page.instagram_business_account?.id ? [{ channel_type: 'instagram', channel_id: page.instagram_business_account.id, access_token: page.access_token }] : [])
+      ]);
+    } else if (targetStoreId) {
+      // Existing store update
       await supabaseAdmin.from('stores').update({
         facebook_page_id: page.id,
         facebook_page_access_token: page.access_token,
         instagram_account_id: page.instagram_business_account?.id || null
-      }).eq('id', storeId);
+      }).eq('id', targetStoreId);
     }
 
-    res.redirect(`/dashboard?store_id=${storeId}`);
+    res.redirect(`/dashboard?store_id=${targetStoreId}`);
   } catch (err) {
     console.error('FB Auth Error:', err.response?.data || err.message);
     res.status(500).send('Failed to complete Facebook OAuth.');
@@ -1118,7 +1157,6 @@ app.get('/api/dashboard', async (req, res) => {
 });
 
 // Add product to store catalog
-// Add product to store catalog
 app.post('/api/products', async (req, res) => {
   try {
     const { store_id, name, price, stock_quantity, description } = req.body;
@@ -1127,7 +1165,6 @@ app.post('/api/products', async (req, res) => {
       return res.status(400).json({ error: 'Missing required product parameters.' });
     }
 
-    // Payload prepared for Supabase insert
     const insertPayload = {
       store_id,
       title: name,
@@ -1231,13 +1268,11 @@ app.post('/webhook', async (req, res) => {
    UNIFIED MULTI-CHANNEL INBOX ENDPOINTS (STRICTLY SCOPED)
    ========================================================================== */
 
-// Serve Inbox Page without caching
 app.get('/inbox', (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
   res.sendFile(path.join(__dirname, 'inbox.html'));
 });
 
-// Fetch distinct conversation threads for a specific store
 app.get('/api/inbox/conversations', async (req, res) => {
   try {
     const { store_id } = req.query;
@@ -1274,7 +1309,6 @@ app.get('/api/inbox/conversations', async (req, res) => {
   }
 });
 
-// Fetch full thread history for a single customer scoped to store_id
 app.get('/api/inbox/messages', async (req, res) => {
   try {
     const { sender_psid, store_id } = req.query;
@@ -1341,7 +1375,6 @@ app.post('/api/inbox/reply', async (req, res) => {
     return res.status(500).json({ error: err.response?.data?.error?.message || 'Failed to send message.' });
   }
 });
-// ... existing routes (e.g. /api/products, /api/inbox/reply, webhook routes) ...
 
 // Order status update route
 app.post('/api/orders/update-status', async (req, res) => {
