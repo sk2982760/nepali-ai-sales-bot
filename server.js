@@ -894,61 +894,99 @@ async function saveStoreChannels(storeId, channels) {
 app.get('/auth/facebook', (req, res) => {
   const { store_id, store_name } = req.query;
 
-  const appId = process.env.META_APP_ID;
-  const redirectUri = encodeURIComponent(`https://${req.get('host')}/auth/facebook/callback`);
-  const scope = encodeURIComponent('pages_show_list,pages_messaging,pages_read_engagement,instagram_basic,instagram_manage_messages');
+  const appId = process.env.FB_APP_ID || process.env.META_APP_ID;
+  const rawRedirectUri = process.env.FB_REDIRECT_URI || `https://${req.get('host')}/auth/facebook/callback`;
+  const scopes = [
+    'pages_show_list',
+    'pages_messaging',
+    'pages_read_engagement',
+    'instagram_basic',
+    'instagram_manage_messages',
+    'business_management'
+  ].join(',');
 
-  // Encode state as base64 JSON payload
+  // Safe base64url encoding for state JSON payload
   const statePayload = JSON.stringify({
     store_id: store_id || null,
     store_name: store_name || null
   });
-  const state = Buffer.from(statePayload).toString('base64');
+  const state = Buffer.from(statePayload).toString('base64url');
 
-  const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}`;
+  const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${encodeURIComponent(rawRedirectUri)}&scope=${encodeURIComponent(scopes)}&state=${state}`;
+
   res.redirect(fbAuthUrl);
 });
 
-// Facebook & Instagram OAuth Callback Handler
+// 2. Facebook & Instagram OAuth Callback Handler
 app.get('/auth/facebook/callback', async (req, res) => {
   const { code, state } = req.query;
-  // Read targetStoreId from state query param or store_id cookie
-  const targetStoreId = state || req.cookies.store_id;
+
+  // Decode state payload
+  let targetStoreId = req.cookies.store_id;
+  if (state) {
+    try {
+      const decodedState = JSON.parse(Buffer.from(state, 'base64url').toString('utf8'));
+      if (decodedState.store_id) {
+        targetStoreId = decodedState.store_id;
+      }
+    } catch (err) {
+      console.error('Failed to parse OAuth state payload:', err);
+    }
+  }
 
   if (!targetStoreId || !code) {
-    return res.status(400).send('Failed to complete Facebook OAuth: Missing store ID context or authorization code.');
+    return res.status(400).send('Failed to complete Facebook OAuth: Missing parameters or Store ID.');
   }
 
   try {
-    // 1. Exchange authorization code for a Facebook access token
-    const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${process.env.FB_APP_ID}&redirect_uri=${encodeURIComponent(process.env.FB_REDIRECT_URI)}&client_secret=${process.env.FB_APP_SECRET}&code=${code}`;
-    
+    const appId = process.env.FB_APP_ID || process.env.META_APP_ID;
+    const appSecret = process.env.FB_APP_SECRET || process.env.META_APP_SECRET;
+    const redirectUri = process.env.FB_REDIRECT_URI || `https://${req.get('host')}/auth/facebook/callback`;
+
+    // 1. Exchange authorization code for User Access Token
+    const tokenUrl = `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${appId}&redirect_uri=${encodeURIComponent(redirectUri)}&client_secret=${appSecret}&code=${code}`;
     const tokenRes = await fetch(tokenUrl);
     const tokenData = await tokenRes.json();
 
     if (tokenData.error) {
-      console.error('Facebook Token Exchange Error:', tokenData.error);
+      console.error('FB Token Error:', tokenData.error);
       return res.status(400).send(`OAuth Error: ${tokenData.error.message}`);
     }
 
     const userAccessToken = tokenData.access_token;
 
-    // 2. Fetch connected Facebook Pages
-    const pagesRes = await fetch(`https://graph.facebook.com/v18.0/me/accounts?access_token=${userAccessToken}`);
+    // 2. Fetch Facebook Pages AND linked Instagram Business Accounts
+    const pagesUrl = `https://graph.facebook.com/v20.0/me/accounts?fields=id,name,access_token,instagram_business_account&access_token=${userAccessToken}`;
+    const pagesRes = await fetch(pagesUrl);
     const pagesData = await pagesRes.json();
 
-    // 3. Save access token and page data to Supabase for this store
+    const pages = pagesData.data || [];
+    if (pages.length === 0) {
+      return res.status(400).send('No Facebook Pages found for this account.');
+    }
+
+    // Select primary page (first page returned)
+    const primaryPage = pages[0];
+    const pageId = primaryPage.id;
+    const pageAccessToken = primaryPage.access_token;
+
+    // Extract linked Instagram Account ID
+    const instagramId = primaryPage.instagram_business_account ? primaryPage.instagram_business_account.id : null;
+
+    // 3. Update Supabase Store with both Facebook & Instagram credentials
     const { error: dbError } = await supabase
       .from('stores')
       .update({
-        facebook_access_token: userAccessToken,
-        facebook_pages: pagesData.data || []
+        facebook_access_token: pageAccessToken,
+        facebook_page_id: pageId,
+        instagram_account_id: instagramId,
+        facebook_pages: pages
       })
       .eq('id', targetStoreId);
 
     if (dbError) throw dbError;
 
-    // 4. Set session cookie so user stays logged in
+    // 4. Set Session Cookie
     res.cookie('store_id', targetStoreId, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -956,14 +994,12 @@ app.get('/auth/facebook/callback', async (req, res) => {
       maxAge: 24 * 60 * 60 * 1000
     });
 
-    // 5. Redirect back to dashboard
     return res.redirect('/dashboard.html?oauth=success');
   } catch (err) {
-    console.error('Facebook OAuth Callback Error:', err);
-    return res.status(500).send('Failed to complete Facebook OAuth due to a server error.');
+    console.error('Meta Combined Auth Error:', err);
+    return res.status(500).send('Failed to connect Facebook & Instagram.');
   }
 });
-
 // 2. WhatsApp Connect Initiation Route
 app.get('/auth/whatsapp', (req, res) => {
   const storeId = req.query.store_id;
