@@ -205,6 +205,15 @@
   </div>
 
   <script>
+    // Remove Meta's trailing #_=_ hash if present
+    if (window.location.hash === '#_=_') {
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState(null, null, window.location.pathname + window.location.search);
+      } else {
+        window.location.hash = '';
+      }
+    }
+
     let rawOrders = [];
 
     function getCookie(name) {
@@ -309,23 +318,28 @@
           return;
         }
 
-        document.getElementById('active-store-display').textContent = `${data.store.store_name} (${data.store.id.substring(0, 8)}...)`;
+        document.getElementById('active-store-display').textContent = `${data.store.store_name || 'Store'} (${data.store.id ? data.store.id.substring(0, 8) : ''}...)`;
 
-        if (data.store.facebook_page_id) {
+        // Facebook & Instagram Connection Status Check
+        if (data.store.facebook_page_id || data.store.facebook_access_token) {
           const fbLink = document.getElementById('auth-fb-link');
           if (fbLink) {
-            fbLink.innerText = 'Connected ✓';
-            fbLink.className = 'px-3 py-1.5 text-xs bg-emerald-600/20 text-emerald-400 font-semibold rounded-lg border border-emerald-500/30 cursor-default';
+            const hasIg = Boolean(data.store.instagram_account_id);
+            fbLink.innerText = hasIg ? 'FB & IG Connected ✓' : 'FB Connected ✓';
+            fbLink.className = 'px-3 py-1.5 text-xs bg-emerald-600/20 text-emerald-400 font-semibold rounded-lg border border-emerald-500/30 cursor-default inline-flex items-center gap-1';
             fbLink.removeAttribute('href');
+            fbLink.onclick = (e) => e.preventDefault();
           }
         }
 
+        // WhatsApp Connection Status Check
         if (data.store.whatsapp_phone_number_id) {
           const waLink = document.getElementById('auth-wa-link');
           if (waLink) {
             waLink.innerText = 'Connected ✓';
-            waLink.className = 'px-3 py-1.5 text-xs bg-emerald-600/20 text-emerald-400 font-semibold rounded-lg border border-emerald-500/30 cursor-default';
+            waLink.className = 'px-3 py-1.5 text-xs bg-emerald-600/20 text-emerald-400 font-semibold rounded-lg border border-emerald-500/30 cursor-default inline-flex items-center gap-1';
             waLink.removeAttribute('href');
+            waLink.onclick = (e) => e.preventDefault();
           }
         }
 
