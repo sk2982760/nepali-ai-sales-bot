@@ -912,83 +912,55 @@ app.get('/auth/facebook', (req, res) => {
 // Facebook & Instagram OAuth Callback Handler
 app.get('/auth/facebook/callback', async (req, res) => {
   const { code, state } = req.query;
-  if (!code) return res.status(400).send('Authentication failed: missing authorization code.');
+  // Read targetStoreId from state query param or store_id cookie
+  const targetStoreId = state || req.cookies.store_id;
+
+  if (!targetStoreId || !code) {
+    return res.status(400).send('Failed to complete Facebook OAuth: Missing store ID context or authorization code.');
+  }
 
   try {
-    let store_id = null;
-    let store_name = null;
+    // 1. Exchange authorization code for a Facebook access token
+    const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?client_id=${process.env.FB_APP_ID}&redirect_uri=${encodeURIComponent(process.env.FB_REDIRECT_URI)}&client_secret=${process.env.FB_APP_SECRET}&code=${code}`;
+    
+    const tokenRes = await fetch(tokenUrl);
+    const tokenData = await tokenRes.json();
 
-    if (state) {
-      try {
-        const decoded = JSON.parse(Buffer.from(state, 'base64').toString('utf-8'));
-        store_id = decoded.store_id;
-        store_name = decoded.store_name;
-      } catch (e) {
-        store_id = state; // Fallback for plain string store_id
-      }
+    if (tokenData.error) {
+      console.error('Facebook Token Exchange Error:', tokenData.error);
+      return res.status(400).send(`OAuth Error: ${tokenData.error.message}`);
     }
 
-    const redirectUri = `https://${req.get('host')}/auth/facebook/callback`;
-    
-    const tokenRes = await axios.get('https://graph.facebook.com/v20.0/oauth/access_token', {
-      params: {
-        client_id: process.env.META_APP_ID,
-        client_secret: process.env.META_APP_SECRET,
-        redirect_uri: redirectUri,
-        code: code
-      }
+    const userAccessToken = tokenData.access_token;
+
+    // 2. Fetch connected Facebook Pages
+    const pagesRes = await fetch(`https://graph.facebook.com/v18.0/me/accounts?access_token=${userAccessToken}`);
+    const pagesData = await pagesRes.json();
+
+    // 3. Save access token and page data to Supabase for this store
+    const { error: dbError } = await supabase
+      .from('stores')
+      .update({
+        facebook_access_token: userAccessToken,
+        facebook_pages: pagesData.data || []
+      })
+      .eq('id', targetStoreId);
+
+    if (dbError) throw dbError;
+
+    // 4. Set session cookie so user stays logged in
+    res.cookie('store_id', targetStoreId, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 24 * 60 * 60 * 1000
     });
 
-    const userToken = tokenRes.data.access_token;
-    
-    const pageRes = await axios.get('https://graph.facebook.com/v20.0/me/accounts', {
-      params: { access_token: userToken, fields: 'id,name,access_token,instagram_business_account' }
-    });
-
-    const page = pageRes.data?.data?.[0];
-    if (!page) {
-      return res.status(400).send('No Facebook Page found under this account.');
-    }
-
-    let targetStoreId = store_id;
-
-    // If signing up as a NEW store, create store in Supabase automatically
-    if (!targetStoreId && store_name) {
-      const slug = store_name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
-      const storePayload = {
-        store_name: store_name.trim(),
-        slug: slug,
-        facebook_page_id: String(page.id),
-        facebook_page_access_token: page.access_token,
-        instagram_account_id: page.instagram_business_account?.id ? String(page.instagram_business_account.id) : null
-      };
-
-      const createdStore = await upsertStore(storePayload);
-      targetStoreId = createdStore.id;
-
-      await saveStoreChannels(targetStoreId, [
-        { channel_type: 'messenger', channel_id: page.id, access_token: page.access_token },
-        ...(page.instagram_business_account?.id ? [{ channel_type: 'instagram', channel_id: page.instagram_business_account.id, access_token: page.access_token }] : [])
-      ]);
-    } else if (targetStoreId) {
-      // Existing store update
-      await supabaseAdmin.from('stores').update({
-        facebook_page_id: page.id,
-        facebook_page_access_token: page.access_token,
-        instagram_account_id: page.instagram_business_account?.id || null
-      }).eq('id', targetStoreId);
-    }
-
-    res.cookie('store_id', store.id, { 
-  maxAge: 24 * 60 * 60 * 1000, 
-  httpOnly: false,
-  sameSite: 'lax',
-  secure: process.env.NODE_ENV === 'production'
-});
-    res.redirect(`/dashboard?store_id=${targetStoreId}`);
+    // 5. Redirect back to dashboard
+    return res.redirect('/dashboard.html?oauth=success');
   } catch (err) {
-    console.error('FB Auth Error:', err.response?.data || err.message);
-    res.status(500).send('Failed to complete Facebook OAuth.');
+    console.error('Facebook OAuth Callback Error:', err);
+    return res.status(500).send('Failed to complete Facebook OAuth due to a server error.');
   }
 });
 
