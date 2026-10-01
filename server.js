@@ -1039,9 +1039,42 @@ app.get('/auth/facebook/callback', async (req, res) => {
 
     const pageId = String(primaryPage.id || '').trim();
     const pageAccessToken = String(primaryPage.access_token || '').trim() || null;
-    const instagramId = primaryPage.instagram_business_account?.id
-      ? String(primaryPage.instagram_business_account.id).trim()
-      : null;
+   let instagramId = primaryPage.instagram_business_account?.id
+  ? String(primaryPage.instagram_business_account.id).trim()
+  : null;
+
+// Explicitly query the Facebook Page for its linked Instagram account.
+try {
+  const pageDetailsUrl =
+    `https://graph.facebook.com/v20.0/${encodeURIComponent(pageId)}` +
+    `?fields=id,name,instagram_business_account` +
+    `&access_token=${encodeURIComponent(userAccessToken)}`;
+
+  const pageDetailsRes = await fetch(pageDetailsUrl);
+  const pageDetails = await pageDetailsRes.json();
+
+  console.log(
+    'Facebook Page details:',
+    JSON.stringify({
+      id: pageDetails.id,
+      name: pageDetails.name,
+      instagram_business_account: pageDetails.instagram_business_account || null
+    }, null, 2)
+  );
+
+  if (!pageDetailsRes.ok || pageDetails.error) {
+    console.error('Facebook Page details error:', pageDetails);
+  } else if (pageDetails.instagram_business_account?.id) {
+    instagramId = String(
+      pageDetails.instagram_business_account.id
+    ).trim();
+  }
+} catch (igLookupError) {
+  console.error(
+    'Instagram account lookup failed:',
+    igLookupError.message
+  );
+}
 
     if (!pageId || !pageAccessToken) {
       throw new Error(
