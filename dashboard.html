@@ -271,7 +271,7 @@
       if (!wabaId) {
         console.error('WhatsApp Embedded Signup finished without waba_id:', whatsappSignupSession);
         whatsappSignupBusy = false;
-        alert('Meta completed signup but did not return the WhatsApp Business Account ID. Please try again.');
+        alert('Meta completed signup but did not return the WhatsApp Business Account ID. Check the browser console for the WA_EMBEDDED_SIGNUP event and try again.');
         return;
       }
 
@@ -329,19 +329,19 @@
     window.addEventListener('message', (event) => {
       // Meta documents both facebook.com and web.facebook.com origins for
       // Embedded Signup messages.
-      if (
-        event.origin !== 'https://www.facebook.com' &&
-        event.origin !== 'https://web.facebook.com'
-      ) {
+      if (!event.origin || !event.origin.endsWith('.facebook.com') && event.origin !== 'https://facebook.com') {
         return;
       }
 
       try {
-        const message = typeof event.data === 'string'
-          ? JSON.parse(event.data)
-          : event.data;
+        let message = event.data;
+        if (typeof message === 'string') {
+          message = JSON.parse(message);
+        }
 
         if (!message || message.type !== 'WA_EMBEDDED_SIGNUP') return;
+
+        console.log('📩 Raw WA_EMBEDDED_SIGNUP message:', message);
 
         whatsappSignupSession = {
           event: message.event || null,
@@ -494,9 +494,10 @@
         config_id: whatsappEmbeddedSignupConfig.configId,
         response_type: 'code',
         override_default_response_type: true,
+        // Embedded Signup v4 supplies the WA_EMBEDDED_SIGNUP session
+        // information without the legacy sessionInfoVersion override.
         extras: {
-          setup: {},
-          sessionInfoVersion: '3'
+          setup: {}
         }
       });
     }
