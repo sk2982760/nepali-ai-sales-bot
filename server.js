@@ -1119,6 +1119,7 @@ app.get('/auth/facebook/callback', async (req, res) => {
     const tokenUrl =
       `https://graph.facebook.com/v20.0/oauth/access_token` +
       `?client_id=${encodeURIComponent(appId)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
       `&client_secret=${encodeURIComponent(appSecret)}` +
       `&code=${encodeURIComponent(code)}`;
 
@@ -1585,13 +1586,28 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
         '🔐 Exchanging WhatsApp Embedded Signup code server-side...'
       );
 
-      const tokenResponse = await axios.get(
+      console.log('WhatsApp OAuth code exchange redirect_uri:',
+        process.env.WHATSAPP_CODE_REDIRECT_URI ||
+        'https://www.facebook.com/connect/login_success.html'
+      );
+
+      // FB.login() with response_type=code uses Meta's SDK callback URI
+      // rather than our application's /auth/whatsapp/callback route.
+      // The authorization code must be exchanged with the EXACT same
+      // redirect_uri that was used by the OAuth dialog.
+      const whatsappCodeRedirectUri =
+        process.env.WHATSAPP_CODE_REDIRECT_URI ||
+        'https://www.facebook.com/connect/login_success.html';
+
+      const tokenResponse = await axios.post(
         `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`,
+        null,
         {
           params: {
             client_id: META_APP_ID,
             client_secret: META_APP_SECRET,
-            code: String(code)
+            code: String(code),
+            redirect_uri: whatsappCodeRedirectUri
           }
         }
       );
