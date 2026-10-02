@@ -1119,7 +1119,6 @@ app.get('/auth/facebook/callback', async (req, res) => {
     const tokenUrl =
       `https://graph.facebook.com/v20.0/oauth/access_token` +
       `?client_id=${encodeURIComponent(appId)}` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
       `&client_secret=${encodeURIComponent(appSecret)}` +
       `&code=${encodeURIComponent(code)}`;
 
