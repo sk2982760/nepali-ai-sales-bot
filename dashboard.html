@@ -366,6 +366,11 @@
         }
 
         if (isWhatsAppFinishEvent(message.event)) {
+          console.log('✅ WhatsApp Embedded Signup completion event received:', {
+            event: message.event,
+            version: message.version,
+            data: message.data
+          });
           tryCompleteWhatsAppSignup();
         }
       } catch (err) {
@@ -496,8 +501,16 @@
         override_default_response_type: true,
         // Embedded Signup v4 supplies the WA_EMBEDDED_SIGNUP session
         // information without the legacy sessionInfoVersion override.
+        // This selector is required for a business that already uses the
+        // WhatsApp Business app. It launches the Coexistence onboarding path
+        // instead of the normal new-number Cloud API path.
         extras: {
-          setup: {}
+          setup: {},
+          featureType: 'whatsapp_business_app_onboarding',
+          // Meta's coexistence examples use sessionInfoVersion 3.
+          // Keep it here so the session event is delivered in the expected
+          // format for WhatsApp Business App onboarding.
+          sessionInfoVersion: '3'
         }
       });
     }

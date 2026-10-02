@@ -1616,16 +1616,34 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
       );
     }
 
+    const normalizeId = (value) => {
+      if (!value) return null;
+      if (typeof value === 'object') {
+        return String(value.id || value.waba_id || value.phone_number_id || '').trim() || null;
+      }
+      return String(value).trim() || null;
+    };
+
     let resolvedWabaId =
-      waba_id ||
-      signup_event_data?.waba_id ||
-      signup_event_data?.waba_ids?.[0] ||
+      normalizeId(waba_id) ||
+      normalizeId(signup_event_data?.waba_id) ||
+      normalizeId(signup_event_data?.waba_ids?.[0]) ||
+      normalizeId(signup_event_data?.waba?.id) ||
       null;
 
     let resolvedPhoneNumberId =
-      phone_number_id ||
-      signup_event_data?.phone_number_id ||
+      normalizeId(phone_number_id) ||
+      normalizeId(signup_event_data?.phone_number_id) ||
+      normalizeId(signup_event_data?.phone?.id) ||
       null;
+
+    console.log('📱 WhatsApp signup inputs:', {
+      signup_event: signup_event || null,
+      waba_id_received: Boolean(resolvedWabaId),
+      phone_number_id_received: Boolean(resolvedPhoneNumberId),
+      has_code: Boolean(code),
+      has_access_token: Boolean(access_token)
+    });
 
     // Session logging data can contain multiple WABAs.
     if (
@@ -1656,8 +1674,9 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
 
     if (!resolvedWabaId) {
       throw new Error(
-        'WhatsApp signup completed but no WABA ID was returned. ' +
-        'Check your Embedded Signup configuration and permissions.'
+        `WhatsApp signup completed with event ${signup_event || 'UNKNOWN'}, but no WABA ID was returned. ` +
+        'For an existing WhatsApp Business App number, Embedded Signup must be launched with ' +
+        'featureType=whatsapp_business_app_onboarding. Check the browser session event and try again.'
       );
     }
 
