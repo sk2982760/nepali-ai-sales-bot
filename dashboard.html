@@ -220,8 +220,7 @@
      * WhatsApp Embedded Signup
      *
      * The Meta App ID and Facebook Login for Business Configuration ID are
-     * loaded from the server endpoint below. The corresponding server route
-     * will be added to server.js.
+     * loaded from the server endpoint below.
      */
     let whatsappEmbeddedSignupConfig = null;
     let whatsappSdkReady = false;
@@ -450,53 +449,17 @@
       const storeId = getActiveStoreId();
 
       if (!storeId) {
-        alert(
-          'Missing active store ID. Please log in again.'
-        );
+        alert('Missing active store ID. Please log in again.');
         return;
       }
 
-      if (whatsappSignupBusy) return;
+      // Use the server-side/manual OAuth flow so the authorization request
+      // and token exchange use one identical redirect_uri.
+      localStorage.setItem('store_id', storeId);
+      setCookie('store_id', storeId);
 
-      if (!whatsappEmbeddedSignupConfig?.configId) {
-        alert(
-          'WhatsApp Embedded Signup is not configured yet. Please add the Meta Configuration ID.'
-        );
-        return;
-      }
-
-      if (!whatsappSdkReady || !window.FB) {
-        alert(
-          'WhatsApp setup is still loading. Please wait a moment and try again.'
-        );
-        return;
-      }
-
-      // Important: call FB.login directly from the click handler so
-      // the browser does not block the Meta popup.
-      whatsappSignupBusy = true;
-      whatsappSignupSession = null;
-
-      window.FB.login(
-        (response) => {
-          completeWhatsAppEmbeddedSignup(
-            response,
-            storeId
-          );
-        },
-        {
-          config_id:
-            whatsappEmbeddedSignupConfig.configId,
-
-          response_type: 'code',
-
-          override_default_response_type: true,
-
-          extras: {
-            setup: {}
-          }
-        }
-      );
+      window.location.href =
+        `/auth/whatsapp?store_id=${encodeURIComponent(storeId)}`;
     }
 
     // Preload configuration before the user clicks Connect.
@@ -504,6 +467,17 @@
       'DOMContentLoaded',
       loadWhatsAppEmbeddedSignupConfig
     );
+
+    // Show a one-time success message after the server-side OAuth callback.
+    document.addEventListener('DOMContentLoaded', () => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('wa_oauth') === 'success') {
+        alert('WhatsApp Business connected successfully.');
+        params.delete('wa_oauth');
+        const cleanUrl = `${window.location.pathname}?${params.toString()}`.replace(/\?$/, '');
+        window.history.replaceState({}, document.title, cleanUrl);
+      }
+    });
   </script>
 
   <script>

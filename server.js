@@ -1331,6 +1331,16 @@ const META_APP_SECRET =
   process.env.FB_APP_SECRET ||
   '';
 
+// Exact OAuth callback used by the manual Facebook Login for Business flow.
+// Set WHATSAPP_EMBEDDED_SIGNUP_REDIRECT_URI in Render to the same value that
+// is entered under Facebook Login for Business -> Settings -> Valid OAuth Redirect URIs.
+function getWhatsAppRedirectUri(req) {
+  return (
+    process.env.WHATSAPP_EMBEDDED_SIGNUP_REDIRECT_URI ||
+    `https://${req.get('host')}/auth/whatsapp/callback`
+  ).trim();
+}
+
 /**
  * Public configuration endpoint for dashboard.html.
  * Never return the Meta App Secret to the browser.
@@ -1517,12 +1527,151 @@ async function registerWhatsAppPhoneIfConfigured(
 }
 
 /**
- * Complete WhatsApp Embedded Signup.
+ * Start WhatsApp Embedded Signup with a MANUAL OAuth redirect.
  *
- * The browser posts the short-lived Embedded Signup authorization code.
- * This server exchanges it for the customer's Business Integration System
- * User token, resolves the WABA and phone number, subscribes the WABA to
- * webhooks, and stores the credentials against the EXISTING store.
+ * We intentionally use the OAuth dialog directly instead of FB.login().
+ * This gives us control of redirect_uri, which must be identical in the
+ * authorization request and the server-side code exchange.
+ */
+app.get('/auth/whatsapp', (req, res) => {
+  const storeId = req.query.store_id || req.cookies?.store_id;
+
+  if (!storeId) {
+    return res.status(400).send('WhatsApp signup failed: Missing store_id.');
+  }
+
+  if (!META_APP_ID || !WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID) {
+    return res.status(500).send(
+      'WhatsApp signup is not configured. Check META_APP_ID and WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID.'
+    );
+  }
+
+  const redirectUri = getWhatsAppRedirectUri(req);
+
+  const params = new URLSearchParams({
+    client_id: META_APP_ID,
+    redirect_uri: redirectUri,
+    config_id: WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID,
+    response_type: 'code',
+    override_default_response_type: 'true',
+    state: String(storeId)
+  });
+
+  const authUrl =
+    `https://www.facebook.com/${WHATSAPP_GRAPH_VERSION}/dialog/oauth?${params.toString()}`;
+
+  console.log('➡️ Starting WhatsApp Embedded Signup');
+  console.log('WhatsApp redirect URI:', redirectUri);
+  console.log('WhatsApp config ID:', WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID);
+
+  return res.redirect(authUrl);
+});
+
+/**
+ * OAuth callback for the manual Embedded Signup launch above.
+ * The code exchange uses the EXACT same redirect_uri as the authorization
+ * request, avoiding the verification-code mismatch shown by Meta.
+ */
+app.get('/auth/whatsapp/callback', async (req, res) => {
+  const code = String(req.query.code || '').trim();
+  const storeId = String(
+    req.query.state || req.cookies?.store_id || ''
+  ).trim();
+
+  if (!code) {
+    return res.status(400).send(
+      'WhatsApp signup failed: Meta did not return an authorization code.'
+    );
+  }
+
+  if (!storeId) {
+    return res.status(400).send(
+      'WhatsApp signup failed: Missing store_id state.'
+    );
+  }
+
+  const redirectUri = getWhatsAppRedirectUri(req);
+
+  try {
+    console.log('🔐 Exchanging WhatsApp authorization code server-side...');
+    console.log('WhatsApp callback redirect URI:', redirectUri);
+
+    const tokenResponse = await axios.get(
+      `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`,
+      {
+        params: {
+          client_id: META_APP_ID,
+          client_secret: META_APP_SECRET,
+          redirect_uri: redirectUri,
+          code
+        }
+      }
+    );
+
+    const businessToken = tokenResponse.data?.access_token;
+
+    if (!businessToken) {
+      throw new Error(
+        'Meta did not return an access token during WhatsApp signup.'
+      );
+    }
+
+    // Reuse the existing onboarding endpoint for WABA discovery, phone
+    // lookup, webhook subscription and database persistence.
+    const origin = `https://${req.get('host')}`;
+    const completionResponse = await axios.post(
+      `${origin}/api/whatsapp/embedded-signup`,
+      {
+        store_id: storeId,
+        access_token: businessToken
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000
+      }
+    );
+
+    if (!completionResponse.data?.success) {
+      throw new Error(
+        completionResponse.data?.error ||
+        'WhatsApp onboarding could not be completed.'
+      );
+    }
+
+    res.cookie('store_id', storeId, {
+      httpOnly: false,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 24 * 60 * 60 * 1000
+    });
+
+    return res.redirect(
+      `/dashboard?store_id=${encodeURIComponent(storeId)}&wa_oauth=success`
+    );
+  } catch (err) {
+    const metaMessage =
+      err.response?.data?.error?.message ||
+      err.response?.data?.error ||
+      err.message ||
+      'Unknown error';
+
+    console.error('❌ WhatsApp OAuth callback error:', metaMessage);
+
+    return res.status(500).send(
+      `WhatsApp connection failed: ${metaMessage}`
+    );
+  }
+});
+
+/**
+ * Complete WhatsApp Embedded Signup after we have a business access token.
+ *
+ * This server exchanges the short-lived code when called directly by a
+ * client, or accepts an already-exchanged access_token from the manual OAuth
+ * callback above. It then resolves the WABA and phone number, subscribes the
+ * WABA to webhooks, and stores the credentials against the EXISTING store.
  */
 app.post('/api/whatsapp/embedded-signup', async (req, res) => {
   const {
@@ -1586,16 +1735,55 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
         '🔐 Exchanging WhatsApp Embedded Signup code server-side...'
       );
 
-      const tokenResponse = await axios.get(
-        `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`,
-        {
+      const tokenEndpoint =
+        `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`;
+
+      let tokenResponse;
+
+      try {
+        // This is Meta's documented FB.login() Embedded Signup exchange.
+        tokenResponse = await axios.get(tokenEndpoint, {
           params: {
             client_id: META_APP_ID,
             client_secret: META_APP_SECRET,
             code: String(code)
           }
+        });
+      } catch (exchangeError) {
+        const message =
+          exchangeError.response?.data?.error?.message ||
+          exchangeError.message ||
+          '';
+
+        console.error('⚠️ Primary WhatsApp code exchange failed:', message);
+
+        // Some Meta Login-for-Business configurations validate the
+        // redirect_uri field and accept an explicit empty value for the
+        // JavaScript SDK flow. Retry only for the specific redirect mismatch.
+        if (/redirect_uri/i.test(message)) {
+          console.log('↩️ Retrying WhatsApp code exchange with redirect_uri=""');
+
+          const fallbackParams = {
+            client_id: META_APP_ID,
+            client_secret: META_APP_SECRET,
+            code: String(code),
+            redirect_uri: ''
+          };
+
+          // If a manual redirect URI is explicitly configured, prefer it
+          // over the empty fallback.
+          if (WHATSAPP_EMBEDDED_SIGNUP_REDIRECT_URI) {
+            fallbackParams.redirect_uri =
+              WHATSAPP_EMBEDDED_SIGNUP_REDIRECT_URI;
+          }
+
+          tokenResponse = await axios.get(tokenEndpoint, {
+            params: fallbackParams
+          });
+        } else {
+          throw exchangeError;
         }
-      );
+      }
 
       businessToken =
         tokenResponse.data?.access_token || null;
