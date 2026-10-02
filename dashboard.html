@@ -7,6 +7,12 @@
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen font-sans">
+  <style>
+    #auth-wa-link:disabled {
+      opacity: 0.7;
+      cursor: default;
+    }
+  </style>
 
   <!-- Navigation -->
   <nav class="border-b border-slate-800 bg-slate-950 px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
@@ -78,9 +84,14 @@
               <p class="text-xs text-slate-500">Connect WhatsApp Cloud API</p>
             </div>
           </div>
-          <a id="auth-wa-link" href="/auth/whatsapp" onclick="preserveStoreBeforeOAuth(event)" class="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 font-semibold rounded-lg text-white transition">
+          <button
+            id="auth-wa-link"
+            type="button"
+            onclick="launchWhatsAppSignup()"
+            class="px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 font-semibold rounded-lg text-white transition"
+          >
             Connect
-          </a>
+          </button>
         </div>
       </div>
     </section>
@@ -205,6 +216,297 @@
   </div>
 
   <script>
+    /*
+     * WhatsApp Embedded Signup
+     *
+     * The Meta App ID and Facebook Login for Business Configuration ID are
+     * loaded from the server endpoint below. The corresponding server route
+     * will be added to server.js.
+     */
+    let whatsappEmbeddedSignupConfig = null;
+    let whatsappSdkReady = false;
+    let whatsappSignupBusy = false;
+    let whatsappSignupSession = null;
+
+    window.addEventListener('message', (event) => {
+      // Embedded Signup session messages come from Meta.
+      if (
+        event.origin !== 'https://www.facebook.com' &&
+        event.origin !== 'https://web.facebook.com'
+      ) {
+        return;
+      }
+
+      try {
+        const message = typeof event.data === 'string'
+          ? JSON.parse(event.data)
+          : event.data;
+
+        if (!message || message.type !== 'WA_EMBEDDED_SIGNUP') return;
+
+        whatsappSignupSession = {
+          event: message.event || null,
+          version: message.version || null,
+          data: message.data || null
+        };
+
+        console.log(
+          'WhatsApp Embedded Signup event:',
+          whatsappSignupSession
+        );
+      } catch (err) {
+        console.warn(
+          'Could not parse WhatsApp Embedded Signup message:',
+          event.data
+        );
+      }
+    });
+
+    async function loadWhatsAppEmbeddedSignupConfig() {
+      try {
+        const res = await fetch(
+          '/api/whatsapp/embedded-signup-config',
+          {
+            method: 'GET',
+            credentials: 'include',
+            cache: 'no-store'
+          }
+        );
+
+        const data = await res.json();
+
+        if (!res.ok || !data.success) {
+          throw new Error(
+            data.error ||
+            'WhatsApp Embedded Signup configuration is unavailable.'
+          );
+        }
+
+        if (!data.app_id || !data.config_id) {
+          throw new Error(
+            'WhatsApp Embedded Signup configuration is incomplete.'
+          );
+        }
+
+        whatsappEmbeddedSignupConfig = {
+          appId: String(data.app_id),
+          configId: String(data.config_id)
+        };
+
+        loadFacebookSdk(whatsappEmbeddedSignupConfig.appId);
+      } catch (err) {
+        console.error(
+          'WhatsApp Embedded Signup config error:',
+          err
+        );
+      }
+    }
+
+    function loadFacebookSdk(appId) {
+      if (window.FB) {
+        initializeFacebookSdk(appId);
+        return;
+      }
+
+      window.fbAsyncInit = function () {
+        initializeFacebookSdk(appId);
+      };
+
+      if (document.getElementById('facebook-jssdk')) return;
+
+      const script = document.createElement('script');
+      script.id = 'facebook-jssdk';
+      script.async = true;
+      script.defer = true;
+      script.crossOrigin = 'anonymous';
+      script.src = 'https://connect.facebook.net/en_US/sdk.js';
+      document.head.appendChild(script);
+    }
+
+    function initializeFacebookSdk(appId) {
+      try {
+        window.FB.init({
+          appId,
+          cookie: true,
+          xfbml: true,
+          version: 'v24.0'
+        });
+
+        whatsappSdkReady = true;
+
+        console.log(
+          '✅ Facebook JavaScript SDK initialized for WhatsApp Embedded Signup.'
+        );
+      } catch (err) {
+        whatsappSdkReady = false;
+        console.error(
+          'Facebook SDK initialization error:',
+          err
+        );
+      }
+    }
+
+    async function completeWhatsAppEmbeddedSignup(response, storeId) {
+      console.log(
+        'WhatsApp Embedded Signup response:',
+        response
+      );
+
+      if (!response || !response.authResponse) {
+        whatsappSignupBusy = false;
+
+        if (response?.status === 'unknown') {
+          alert('WhatsApp setup was cancelled or not completed.');
+        } else {
+          alert(
+            'WhatsApp Embedded Signup did not return an authorization response.'
+          );
+        }
+
+        return;
+      }
+
+      const authorizationCode =
+        response.authResponse.code || null;
+
+      const accessToken =
+        response.authResponse.accessToken || null;
+
+      if (!authorizationCode && !accessToken) {
+        whatsappSignupBusy = false;
+        alert(
+          'Meta did not return an authorization code or access token.'
+        );
+        return;
+      }
+
+      try {
+        const signupData =
+          whatsappSignupSession?.data &&
+          typeof whatsappSignupSession.data === 'object'
+            ? whatsappSignupSession.data
+            : {};
+
+        const payload = {
+          store_id: storeId,
+
+          // The code is the normal Embedded Signup completion value.
+          code: authorizationCode,
+
+          // Some configurations may return an access token as well.
+          access_token: accessToken,
+
+          // These values come from the WA_EMBEDDED_SIGNUP event.
+          waba_id: signupData.waba_id || null,
+          phone_number_id: signupData.phone_number_id || null,
+
+          signup_event:
+            whatsappSignupSession?.event || null,
+
+          signup_event_data: signupData
+        };
+
+        const res = await fetch(
+          '/api/whatsapp/embedded-signup',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            credentials: 'include',
+            body: JSON.stringify(payload)
+          }
+        );
+
+        const data = await res.json();
+
+        if (!res.ok || !data.success) {
+          throw new Error(
+            data.error ||
+            'The server could not complete WhatsApp onboarding.'
+          );
+        }
+
+        alert(
+          'WhatsApp Business connected successfully.'
+        );
+
+        window.location.reload();
+      } catch (err) {
+        console.error(
+          'WhatsApp onboarding completion error:',
+          err
+        );
+
+        alert(
+          `WhatsApp connection failed: ${err.message}`
+        );
+      } finally {
+        whatsappSignupBusy = false;
+      }
+    }
+
+    function launchWhatsAppSignup() {
+      const storeId = getActiveStoreId();
+
+      if (!storeId) {
+        alert(
+          'Missing active store ID. Please log in again.'
+        );
+        return;
+      }
+
+      if (whatsappSignupBusy) return;
+
+      if (!whatsappEmbeddedSignupConfig?.configId) {
+        alert(
+          'WhatsApp Embedded Signup is not configured yet. Please add the Meta Configuration ID.'
+        );
+        return;
+      }
+
+      if (!whatsappSdkReady || !window.FB) {
+        alert(
+          'WhatsApp setup is still loading. Please wait a moment and try again.'
+        );
+        return;
+      }
+
+      // Important: call FB.login directly from the click handler so
+      // the browser does not block the Meta popup.
+      whatsappSignupBusy = true;
+      whatsappSignupSession = null;
+
+      window.FB.login(
+        (response) => {
+          completeWhatsAppEmbeddedSignup(
+            response,
+            storeId
+          );
+        },
+        {
+          config_id:
+            whatsappEmbeddedSignupConfig.configId,
+
+          response_type: 'code',
+
+          override_default_response_type: true,
+
+          extras: {
+            setup: {}
+          }
+        }
+      );
+    }
+
+    // Preload configuration before the user clicks Connect.
+    document.addEventListener(
+      'DOMContentLoaded',
+      loadWhatsAppEmbeddedSignupConfig
+    );
+  </script>
+
+  <script>
     // Clean Meta hash `#_=_` if present
     if (window.location.hash === '#_=_') {
       if (window.history && window.history.replaceState) {
@@ -258,16 +560,8 @@
       localStorage.setItem('store_id', currentStoreId);
       setCookie('store_id', currentStoreId);
 
-      // Make sure the clicked OAuth link always carries the active store ID,
-      // even if the user clicks before loadDashboardData() finishes.
-      if (e.currentTarget) {
-        const href = e.currentTarget.id === 'auth-wa-link'
-          ? '/auth/whatsapp'
-          : '/auth/facebook';
-
-        e.currentTarget.href =
-          `${href}?store_id=${encodeURIComponent(currentStoreId)}`;
-      }
+      // Facebook still uses normal OAuth. WhatsApp now launches
+      // Meta Embedded Signup through launchWhatsAppSignup().
     }
 
     function openProductModal() { 
@@ -352,10 +646,10 @@ async function loadDashboardData() {
     if (inboxLink) inboxLink.href = `/inbox?store_id=${encodeURIComponent(storeId)}`;
 
     const authFbLink = document.getElementById('auth-fb-link');
-    if (authFbLink) authFbLink.href = `/auth/facebook?store_id=${encodeURIComponent(storeId)}`;
-
-    const authWaLink = document.getElementById('auth-wa-link');
-    if (authWaLink) authWaLink.href = `/auth/whatsapp?store_id=${encodeURIComponent(storeId)}`;
+    if (authFbLink) {
+      authFbLink.href =
+        `/auth/facebook?store_id=${encodeURIComponent(storeId)}`;
+    }
   }
 
       try {
@@ -417,12 +711,20 @@ async function loadDashboardData() {
           }
         }
 
-        // Check for WhatsApp connection
-        const isWaConnected = Boolean(
-          data.store.whatsapp_phone_number_id || 
+        // Check for a REAL WhatsApp Cloud API connection.
+        // A token by itself is not enough; we need the business phone ID too.
+        const whatsappPhoneNumberId =
+          data.store.whatsapp_phone_number_id ||
           data.store.wa_phone_number_id ||
+          null;
+
+        const whatsappAccessToken =
           data.store.whatsapp_access_token ||
-          data.store.whatsapp_connected
+          null;
+
+        const isWaConnected = Boolean(
+          whatsappPhoneNumberId &&
+          whatsappAccessToken
         );
 
         if (isWaConnected) {
@@ -430,8 +732,16 @@ async function loadDashboardData() {
           if (waLink) {
             waLink.innerText = 'Connected ✓';
             waLink.className = 'px-3 py-1.5 text-xs bg-emerald-600/20 text-emerald-400 font-semibold rounded-lg border border-emerald-500/30 cursor-default inline-flex items-center gap-1';
-            waLink.removeAttribute('href');
+            waLink.disabled = true;
             waLink.onclick = (e) => e.preventDefault();
+          }
+        } else {
+          const waLink = document.getElementById('auth-wa-link');
+          if (waLink) {
+            waLink.innerText = 'Connect';
+            waLink.disabled = false;
+            waLink.className = 'px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 font-semibold rounded-lg text-white transition';
+            waLink.onclick = launchWhatsAppSignup;
           }
         }
 

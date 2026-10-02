@@ -269,7 +269,10 @@ app.post('/api/update-password', async (req, res) => {
    ========================================================================== */
 
 async function getStoreByPlatformId({ whatsappPhoneId, facebookPageId, instagramAccountId }) {
-  const targetId = String(whatsappPhoneId || facebookPageId || instagramAccountId || '').trim();
+  const targetId = String(
+    whatsappPhoneId || facebookPageId || instagramAccountId || ''
+  ).trim();
+
   if (!targetId) return null;
 
   try {
@@ -280,35 +283,68 @@ async function getStoreByPlatformId({ whatsappPhoneId, facebookPageId, instagram
       .maybeSingle();
 
     if (!channelErr && channel) {
-      const storeData = Array.isArray(channel.stores) ? channel.stores[0] : channel.stores;
+      const storeData = Array.isArray(channel.stores)
+        ? channel.stores[0]
+        : channel.stores;
+
       if (storeData) {
-        return {
+        const result = {
           ...storeData,
-          facebook_page_access_token: channel.access_token || storeData.facebook_page_access_token,
-          whatsapp_access_token: channel.access_token || storeData.whatsapp_access_token,
-          active_channel_id: channel.channel_id
+          active_channel_id: channel.channel_id,
+          active_channel_type: channel.channel_type
         };
+
+        if (channel.channel_type === 'whatsapp') {
+          result.whatsapp_access_token =
+            channel.access_token ||
+            storeData.whatsapp_access_token;
+        } else {
+          result.facebook_page_access_token =
+            channel.access_token ||
+            storeData.facebook_page_access_token;
+        }
+
+        return result;
       }
     }
 
     let query = supabaseAdmin.from('stores').select('*');
+
     if (whatsappPhoneId) {
-      query = query.eq('whatsapp_phone_number_id', String(whatsappPhoneId).trim());
+      query = query.eq(
+        'whatsapp_phone_number_id',
+        String(whatsappPhoneId).trim()
+      );
     } else if (facebookPageId) {
-      query = query.eq('facebook_page_id', String(facebookPageId).trim());
+      query = query.eq(
+        'facebook_page_id',
+        String(facebookPageId).trim()
+      );
     } else if (instagramAccountId) {
-      query = query.eq('instagram_account_id', String(instagramAccountId).trim());
+      query = query.eq(
+        'instagram_account_id',
+        String(instagramAccountId).trim()
+      );
     }
 
-    const { data: directStore, error: directErr } = await query.maybeSingle();
+    const { data: directStore, error: directErr } =
+      await query.maybeSingle();
+
     if (!directErr && directStore) {
       return directStore;
     }
 
-    console.error(`⚠️ Store not found for incoming ID: ${targetId}`);
+    console.error(
+      `⚠️ Store not found for incoming ID: ${targetId}`
+    );
+
     return null;
   } catch (err) {
-    console.error('❌ Error during store lookup:', err.message);
+    console.error(
+      '❌ Error during store lookup:',
+      err.message
+    );
+
     return null;
   }
 }
@@ -664,6 +700,99 @@ async function sendTextMessage(senderPsid, responseText, accessToken) {
     }
   } catch (error) {
     console.error('Failed to send text message:', error);
+  }
+}
+
+/* ==========================================================================
+   WHATSAPP CLOUD API MESSAGING HELPERS
+   ========================================================================== */
+
+async function sendWhatsAppTextMessage(
+  phoneNumberId,
+  recipientWaId,
+  responseText,
+  accessToken
+) {
+  if (
+    !phoneNumberId ||
+    !recipientWaId ||
+    !accessToken
+  ) {
+    console.error(
+      '❌ WhatsApp send skipped: missing required credentials.'
+    );
+    return false;
+  }
+
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/${encodeURIComponent(phoneNumberId)}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: String(recipientWaId),
+        type: 'text',
+        text: {
+          body: String(responseText || '')
+        }
+      },
+      {
+        headers: {
+          Authorization:
+            `Bearer ${String(accessToken).trim()}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const messageId =
+      response.data?.messages?.[0]?.id ||
+      null;
+
+    console.log(
+      `✅ WhatsApp response sent to user (${recipientWaId})` +
+      (messageId ? ` | message=${messageId}` : '')
+    );
+
+    return true;
+  } catch (err) {
+    console.error(
+      '❌ WhatsApp Send Error:',
+      err.response?.data ||
+        err.message
+    );
+
+    return false;
+  }
+}
+
+async function getWhatsAppMediaUrl(
+  mediaId,
+  accessToken
+) {
+  if (!mediaId || !accessToken) {
+    return null;
+  }
+
+  try {
+    const response = await axios.get(
+      `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/${encodeURIComponent(mediaId)}`,
+      {
+        params: {
+          access_token: String(accessToken).trim()
+        }
+      }
+    );
+
+    return response.data?.url || null;
+  } catch (err) {
+    console.error(
+      '❌ WhatsApp media lookup error:',
+      err.response?.data ||
+        err.message
+    );
+
+    return null;
   }
 }
 
@@ -1175,76 +1304,572 @@ try {
   }
 });
 
-// 3. WhatsApp Connect Initiation Route
-app.get('/auth/whatsapp', (req, res) => {
-  const storeId = req.query.store_id || req.cookies?.store_id;
-  if (!storeId) return res.status(400).send('Missing store_id parameter.');
+/* ==========================================================================
+   WHATSAPP CLOUD API EMBEDDED SIGNUP
+   ========================================================================== */
 
-  const appId = process.env.META_APP_ID;
-  const redirectUri = encodeURIComponent(`https://${req.get('host')}/auth/whatsapp/callback`);
-  const scope = encodeURIComponent('whatsapp_business_management,whatsapp_business_messaging');
+const WHATSAPP_GRAPH_VERSION =
+  process.env.WHATSAPP_GRAPH_VERSION ||
+  process.env.META_GRAPH_VERSION ||
+  'v25.0';
 
-  const waAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${storeId}`;
-  res.redirect(waAuthUrl);
+const WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID =
+  process.env.WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID ||
+  process.env.META_WHATSAPP_CONFIG_ID ||
+  process.env.META_EMBEDDED_SIGNUP_CONFIG_ID ||
+  process.env.WHATSAPP_CONFIG_ID ||
+  process.env.META_CONFIG_ID ||
+  '';
+
+const META_APP_ID =
+  process.env.META_APP_ID ||
+  process.env.FB_APP_ID ||
+  '';
+
+const META_APP_SECRET =
+  process.env.META_APP_SECRET ||
+  process.env.FB_APP_SECRET ||
+  '';
+
+/**
+ * Public configuration endpoint for dashboard.html.
+ * Never return the Meta App Secret to the browser.
+ */
+app.get('/api/whatsapp/embedded-signup-config', (req, res) => {
+  if (!META_APP_ID) {
+    return res.status(500).json({
+      success: false,
+      error: 'META_APP_ID is not configured on the server.'
+    });
+  }
+
+  if (!WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID) {
+    return res.status(500).json({
+      success: false,
+      error:
+        'WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID is not configured on the server.'
+    });
+  }
+
+  return res.json({
+    success: true,
+    app_id: META_APP_ID,
+    config_id: WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID
+  });
 });
 
-// Robust WhatsApp Callback Handler
-app.get('/auth/whatsapp/callback', async (req, res) => {
-  const code = req.query.code;
-  const storeId = req.query.state || req.query.store_id || req.cookies?.store_id;
-
-  if (!code) return res.status(400).send('WhatsApp OAuth failed: Missing authorization code.');
-  if (!storeId) return res.status(400).send('WhatsApp OAuth failed: Missing store_id state.');
+/**
+ * Discover WABA IDs from the business token when the browser session event
+ * did not arrive before the FB.login callback.
+ */
+async function discoverWabaIdsFromBusinessToken(businessToken) {
+  if (!businessToken || !META_APP_ID || !META_APP_SECRET) {
+    return [];
+  }
 
   try {
-    const redirectUri = `https://${req.get('host')}/auth/whatsapp/callback`;
-
-    const tokenRes = await axios.get('https://graph.facebook.com/v20.0/oauth/access_token', {
-      params: {
-        client_id: process.env.META_APP_ID,
-        client_secret: process.env.META_APP_SECRET,
-        redirect_uri: redirectUri,
-        code: code
+    const response = await axios.get(
+      `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/debug_token`,
+      {
+        params: {
+          input_token: businessToken,
+          access_token: `${META_APP_ID}|${META_APP_SECRET}`
+        }
       }
-    });
+    );
 
-    const userToken = tokenRes.data.access_token;
+    const debugData = response.data?.data;
 
-    const waAccountRes = await axios.get('https://graph.facebook.com/v20.0/me/whatsapp_business_accounts', {
-      params: { access_token: userToken }
-    }).catch(() => null);
-
-    const wabaId = waAccountRes?.data?.data?.[0]?.id;
-
-    if (wabaId) {
-      const phoneRes = await axios.get(`https://graph.facebook.com/v20.0/${wabaId}/phone_numbers`, {
-        params: { access_token: userToken }
-      }).catch(() => null);
-
-      const phoneNumId = phoneRes?.data?.data?.[0]?.id;
-
-      await supabaseAdmin.from('stores').update({
-        whatsapp_phone_number_id: phoneNumId || null,
-        whatsapp_access_token: userToken
-      }).eq('id', storeId);
-    } else {
-      await supabaseAdmin.from('stores').update({
-        whatsapp_access_token: userToken
-      }).eq('id', storeId);
+    if (!debugData?.is_valid) {
+      console.error(
+        '⚠️ WhatsApp business token is invalid according to debug_token.'
+      );
+      return [];
     }
 
-    res.cookie('store_id', storeId, { 
-      maxAge: 24 * 60 * 60 * 1000, 
-      httpOnly: false,
-      sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production'
-    });
-    res.redirect(`/dashboard?store_id=${storeId}`);
+    const ids = new Set();
+
+    for (const item of debugData.granular_scopes || []) {
+      const scope = item?.scope || '';
+
+      if (
+        scope === 'whatsapp_business_management' ||
+        scope === 'whatsapp_business_messaging'
+      ) {
+        for (const id of item?.target_ids || []) {
+          if (id) ids.add(String(id));
+        }
+      }
+    }
+
+    // Fallback for Meta responses where the granular scope naming differs
+    // but explicit target_ids are still present.
+    if (ids.size === 0) {
+      for (const item of debugData.granular_scopes || []) {
+        for (const id of item?.target_ids || []) {
+          if (id) ids.add(String(id));
+        }
+      }
+    }
+
+    return [...ids];
   } catch (err) {
-    console.error('WhatsApp Auth Detailed Error:', err.response?.data || err.message);
-    res.status(500).send(`Failed to complete WhatsApp OAuth: ${err.response?.data?.error?.message || err.message}`);
+    console.error(
+      '❌ WhatsApp debug_token error:',
+      err.response?.data || err.message
+    );
+
+    return [];
+  }
+}
+
+/**
+ * Get phone numbers associated with a customer's WABA.
+ */
+async function getWhatsAppPhoneNumbers(wabaId, businessToken) {
+  if (!wabaId || !businessToken) return [];
+
+  const response = await axios.get(
+    `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/${encodeURIComponent(wabaId)}/phone_numbers`,
+    {
+      params: {
+        access_token: businessToken
+      }
+    }
+  );
+
+  return response.data?.data || [];
+}
+
+/**
+ * Subscribe the Meta app to the customer's WABA so WhatsApp webhooks are
+ * sent to the app's configured webhook endpoint.
+ */
+async function subscribeAppToWhatsAppWaba(
+  wabaId,
+  businessToken
+) {
+  if (!wabaId || !businessToken) {
+    throw new Error(
+      'WABA ID and business token are required for webhook subscription.'
+    );
+  }
+
+  const response = await axios.post(
+    `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/${encodeURIComponent(wabaId)}/subscribed_apps`,
+    {},
+    {
+      params: {
+        access_token: businessToken
+      }
+    }
+  );
+
+  return response.data;
+}
+
+/**
+ * Optional phone registration.
+ *
+ * To enable this, add WHATSAPP_REGISTRATION_PIN=123456 to Render.
+ * Meta requires a 6-digit PIN when registering a phone for Cloud API.
+ */
+async function registerWhatsAppPhoneIfConfigured(
+  phoneNumberId,
+  businessToken
+) {
+  const pin = String(
+    process.env.WHATSAPP_REGISTRATION_PIN || ''
+  ).trim();
+
+  if (!pin) {
+    return {
+      attempted: false,
+      skipped: true
+    };
+  }
+
+  if (!/^\d{6}$/.test(pin)) {
+    throw new Error(
+      'WHATSAPP_REGISTRATION_PIN must contain exactly 6 digits.'
+    );
+  }
+
+  const response = await axios.post(
+    `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/${encodeURIComponent(phoneNumberId)}/register`,
+    {
+      messaging_product: 'whatsapp',
+      pin
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${businessToken}`,
+        'Content-Type': 'application/json'
+      }
+    }
+  );
+
+  return {
+    attempted: true,
+    skipped: false,
+    result: response.data
+  };
+}
+
+/**
+ * Complete WhatsApp Embedded Signup.
+ *
+ * The browser posts the short-lived Embedded Signup authorization code.
+ * This server exchanges it for the customer's Business Integration System
+ * User token, resolves the WABA and phone number, subscribes the WABA to
+ * webhooks, and stores the credentials against the EXISTING store.
+ */
+app.post('/api/whatsapp/embedded-signup', async (req, res) => {
+  const {
+    store_id,
+    code,
+    access_token,
+    waba_id,
+    phone_number_id,
+    signup_event,
+    signup_event_data
+  } = req.body || {};
+
+  if (!store_id) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing store_id.'
+    });
+  }
+
+  if (!code && !access_token) {
+    return res.status(400).json({
+      success: false,
+      error:
+        'Meta did not return an authorization code or access token.'
+    });
+  }
+
+  if (!META_APP_ID || !META_APP_SECRET) {
+    return res.status(500).json({
+      success: false,
+      error:
+        'META_APP_ID or META_APP_SECRET is missing from the server.'
+    });
+  }
+
+  try {
+    // Never create a new store during WhatsApp onboarding.
+    const { data: targetStore, error: targetStoreError } =
+      await supabaseAdmin
+        .from('stores')
+        .select('id, store_name')
+        .eq('id', String(store_id))
+        .maybeSingle();
+
+    if (targetStoreError) {
+      throw targetStoreError;
+    }
+
+    if (!targetStore) {
+      return res.status(404).json({
+        success: false,
+        error: `Store not found for store_id: ${store_id}`
+      });
+    }
+
+    let businessToken = null;
+
+    // Meta's Embedded Signup response_type=code returns an exchangeable code.
+    if (code) {
+      console.log(
+        '🔐 Exchanging WhatsApp Embedded Signup code server-side...'
+      );
+
+      const tokenResponse = await axios.get(
+        `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`,
+        {
+          params: {
+            client_id: META_APP_ID,
+            client_secret: META_APP_SECRET,
+            code: String(code)
+          }
+        }
+      );
+
+      businessToken =
+        tokenResponse.data?.access_token || null;
+
+      if (!businessToken) {
+        throw new Error(
+          'Meta did not return a WhatsApp business access token.'
+        );
+      }
+    } else {
+      // Fallback for configurations returning accessToken in authResponse.
+      businessToken = String(access_token).trim();
+    }
+
+    if (!businessToken) {
+      throw new Error(
+        'Unable to obtain a WhatsApp business access token.'
+      );
+    }
+
+    let resolvedWabaId =
+      waba_id ||
+      signup_event_data?.waba_id ||
+      signup_event_data?.waba_ids?.[0] ||
+      null;
+
+    let resolvedPhoneNumberId =
+      phone_number_id ||
+      signup_event_data?.phone_number_id ||
+      null;
+
+    // Session logging data can contain multiple WABAs.
+    if (
+      !resolvedWabaId &&
+      Array.isArray(signup_event_data?.waba_ids)
+    ) {
+      resolvedWabaId =
+        signup_event_data.waba_ids[0] || null;
+    }
+
+    // The message event and FB.login callback are independent. If the
+    // browser did not receive the WABA ID in time, use debug_token.
+    if (!resolvedWabaId) {
+      const discoveredWabaIds =
+        await discoverWabaIdsFromBusinessToken(
+          businessToken
+        );
+
+      resolvedWabaId =
+        discoveredWabaIds[0] || null;
+
+      if (resolvedWabaId) {
+        console.log(
+          '✅ WABA discovered from WhatsApp business token.'
+        );
+      }
+    }
+
+    if (!resolvedWabaId) {
+      throw new Error(
+        'WhatsApp signup completed but no WABA ID was returned. ' +
+        'Check your Embedded Signup configuration and permissions.'
+      );
+    }
+
+    // If phone_number_id did not arrive in session logging, discover it from
+    // the WABA. The current dashboard has one connection, so use the first
+    // available phone number.
+    let phoneNumbers = [];
+
+    try {
+      phoneNumbers =
+        await getWhatsAppPhoneNumbers(
+          resolvedWabaId,
+          businessToken
+        );
+    } catch (phoneError) {
+      console.error(
+        '⚠️ Unable to list WhatsApp phone numbers:',
+        phoneError.response?.data ||
+          phoneError.message
+      );
+    }
+
+    if (!resolvedPhoneNumberId && phoneNumbers.length > 0) {
+      resolvedPhoneNumberId =
+        phoneNumbers[0]?.id
+          ? String(phoneNumbers[0].id).trim()
+          : null;
+    }
+
+    if (!resolvedPhoneNumberId) {
+      throw new Error(
+        `WABA ${resolvedWabaId} was found, but no WhatsApp phone number ID was returned. ` +
+        'Complete the phone-number portion of Embedded Signup and try again.'
+      );
+    }
+
+    // Validate provided phone ID against the selected WABA when possible.
+    if (phoneNumbers.length > 0) {
+      const phoneBelongsToWaba =
+        phoneNumbers.some(
+          (phone) =>
+            String(phone?.id || '').trim() ===
+            String(resolvedPhoneNumberId).trim()
+        );
+
+      if (!phoneBelongsToWaba) {
+        throw new Error(
+          'The selected WhatsApp phone number does not belong to the WABA returned by Meta.'
+        );
+      }
+    }
+
+    // Subscribe the app to WABA webhooks.
+    let webhookSubscription;
+
+    try {
+      webhookSubscription =
+        await subscribeAppToWhatsAppWaba(
+          resolvedWabaId,
+          businessToken
+        );
+
+      console.log(
+        '✅ WhatsApp WABA webhook subscription completed.'
+      );
+    } catch (subscribeError) {
+      console.error(
+        '❌ WhatsApp WABA webhook subscription failed:',
+        subscribeError.response?.data ||
+          subscribeError.message
+      );
+
+      throw new Error(
+        `WhatsApp WABA webhook subscription failed: ${
+          subscribeError.response?.data?.error?.message ||
+          subscribeError.message
+        }`
+      );
+    }
+
+    // Optional phone registration. By default this is skipped so we do not
+    // invent a PIN or alter the customer's phone configuration.
+    let phoneRegistration = {
+      attempted: false,
+      skipped: true
+    };
+
+    try {
+      phoneRegistration =
+        await registerWhatsAppPhoneIfConfigured(
+          resolvedPhoneNumberId,
+          businessToken
+        );
+
+      if (phoneRegistration.attempted) {
+        console.log(
+          '✅ WhatsApp phone registration completed.'
+        );
+      } else {
+        console.log(
+          'ℹ️ WhatsApp phone registration skipped; ' +
+          'WHATSAPP_REGISTRATION_PIN is not configured.'
+        );
+      }
+    } catch (registrationError) {
+      console.error(
+        '❌ WhatsApp phone registration failed:',
+        registrationError.response?.data ||
+          registrationError.message
+      );
+
+      throw new Error(
+        `WhatsApp phone registration failed: ${
+          registrationError.response?.data?.error?.message ||
+          registrationError.message
+        }`
+      );
+    }
+
+    // Save the actual usable connection to the current store.
+    const { data: updatedStore, error: storeUpdateError } =
+      await supabaseAdmin
+        .from('stores')
+        .update({
+          whatsapp_phone_number_id:
+            String(resolvedPhoneNumberId).trim(),
+          whatsapp_access_token: businessToken
+        })
+        .eq('id', String(store_id))
+        .select()
+        .single();
+
+    if (storeUpdateError) {
+      throw storeUpdateError;
+    }
+
+    if (!updatedStore) {
+      throw new Error(
+        `No store was updated for store_id: ${store_id}`
+      );
+    }
+
+    // Store phone-number routing information in the multi-channel table.
+    await saveStoreChannels(String(store_id), [
+      {
+        channel_type: 'whatsapp',
+        channel_id:
+          String(resolvedPhoneNumberId).trim(),
+        access_token: businessToken
+      }
+    ]);
+
+    // Never return or log the actual business token.
+    console.log('======================================');
+    console.log('✅ WHATSAPP EMBEDDED SIGNUP COMPLETED');
+    console.log('Store ID:', store_id);
+    console.log('WABA ID:', resolvedWabaId);
+    console.log(
+      'Phone Number ID:',
+      resolvedPhoneNumberId
+    );
+    console.log(
+      'Signup Event:',
+      signup_event || 'not provided'
+    );
+    console.log(
+      'Webhook subscription:',
+      webhookSubscription?.success === true
+        ? 'success'
+        : 'completed'
+    );
+    console.log(
+      'Phone registration:',
+      phoneRegistration.attempted
+        ? 'completed'
+        : 'not attempted'
+    );
+    console.log('Business token saved: true');
+    console.log('======================================');
+
+    return res.status(200).json({
+      success: true,
+      store_id: String(store_id),
+      whatsapp_phone_number_id:
+        String(resolvedPhoneNumberId),
+      waba_id: String(resolvedWabaId),
+      phone_registration_attempted:
+        Boolean(phoneRegistration.attempted)
+    });
+
+  } catch (err) {
+    console.error(
+      '❌ WhatsApp Embedded Signup Error:',
+      err.response?.data ||
+        err.message ||
+        err
+    );
+
+    return res.status(500).json({
+      success: false,
+      error:
+        err.response?.data?.error?.message ||
+        err.message ||
+        'Failed to complete WhatsApp Embedded Signup.'
+    });
   }
 });
+
+/*
+ * The old /auth/whatsapp generic OAuth flow has intentionally been removed.
+ * WhatsApp onboarding now uses Meta Embedded Signup from dashboard.html.
+ */
 
 app.post('/api/connect-all-channels', async (req, res) => {
   try {
@@ -1437,53 +2062,241 @@ app.get('/webhook', (req, res) => {
 app.post('/webhook', async (req, res) => {
   const body = req.body;
 
-  if (body.object === 'page' || body.object === 'instagram') {
-    res.status(200).send('EVENT_RECEIVED');
+  const isPageEvent =
+    body.object === 'page' ||
+    body.object === 'instagram';
 
-    for (const entry of body.entry || []) {
-      const pageOrIgId = entry.id;
+  const isWhatsAppEvent =
+    body.object === 'whatsapp_business_account';
 
-      if (entry.changes) {
-        for (const change of entry.changes) {
-          if (change.field === 'comments' || change.field === 'feed') {
-            await handleCommentEvent(change.value, pageOrIgId);
+  if (!isPageEvent && !isWhatsAppEvent) {
+    return res.sendStatus(404);
+  }
+
+  // Acknowledge Meta immediately.
+  res.status(200).send('EVENT_RECEIVED');
+
+  try {
+    // -----------------------------------------------------------------------
+    // FACEBOOK / INSTAGRAM
+    // -----------------------------------------------------------------------
+    if (isPageEvent) {
+      for (const entry of body.entry || []) {
+        const pageOrIgId = entry.id;
+
+        if (entry.changes) {
+          for (const change of entry.changes) {
+            if (
+              change.field === 'comments' ||
+              change.field === 'feed'
+            ) {
+              await handleCommentEvent(
+                change.value,
+                pageOrIgId
+              );
+            }
           }
         }
-      }
 
-      const messagingEvents = entry.messaging || [];
+        const messagingEvents =
+          entry.messaging || [];
 
-      for (const messagingEvent of messagingEvents) {
-        const senderPsid = messagingEvent.sender?.id || messagingEvent.from?.id;
-        const messageId = messagingEvent.message?.mid || messagingEvent.id;
+        for (const messagingEvent of messagingEvents) {
+          const senderPsid =
+            messagingEvent.sender?.id ||
+            messagingEvent.from?.id;
 
-        if (!senderPsid || messagingEvent.message?.is_echo) continue;
-        if (trackProcessedMessageId(messageId)) continue;
+          const messageId =
+            messagingEvent.message?.mid ||
+            messagingEvent.id;
 
-        const store = await getStoreByPlatformId({
-          facebookPageId: pageOrIgId,
-          instagramAccountId: pageOrIgId
-        });
-
-        if (!store) continue;
-
-        const rawToken = store.facebook_page_access_token || process.env.META_ACCESS_TOKEN || '';
-
-        if (messagingEvent.message?.attachments) {
-          const imgUrl = messagingEvent.message.attachments[0]?.payload?.url;
-          if (imgUrl) {
-            const aiReply = await processCustomerImage(imgUrl, senderPsid, store);
-            await sendTextMessage(senderPsid, aiReply, rawToken);
+          if (
+            !senderPsid ||
+            messagingEvent.message?.is_echo
+          ) {
+            continue;
           }
-        } else if (messagingEvent.message?.text) {
-          const userMsg = messagingEvent.message.text;
-          const aiReply = await processCustomerMessage(userMsg, senderPsid, store);
-          await sendTextMessage(senderPsid, aiReply, rawToken);
+
+          if (trackProcessedMessageId(messageId)) {
+            continue;
+          }
+
+          const store =
+            await getStoreByPlatformId({
+              facebookPageId: pageOrIgId,
+              instagramAccountId: pageOrIgId
+            });
+
+          if (!store) continue;
+
+          const rawToken =
+            store.facebook_page_access_token ||
+            process.env.META_ACCESS_TOKEN ||
+            '';
+
+          if (messagingEvent.message?.attachments) {
+            const imgUrl =
+              messagingEvent.message
+                .attachments[0]
+                ?.payload?.url;
+
+            if (imgUrl) {
+              const aiReply =
+                await processCustomerImage(
+                  imgUrl,
+                  senderPsid,
+                  store
+                );
+
+              await sendTextMessage(
+                senderPsid,
+                aiReply,
+                rawToken
+              );
+            }
+          } else if (
+            messagingEvent.message?.text
+          ) {
+            const userMsg =
+              messagingEvent.message.text;
+
+            const aiReply =
+              await processCustomerMessage(
+                userMsg,
+                senderPsid,
+                store
+              );
+
+            await sendTextMessage(
+              senderPsid,
+              aiReply,
+              rawToken
+            );
+          }
         }
       }
     }
-  } else {
-    res.sendStatus(404);
+
+    // -----------------------------------------------------------------------
+    // WHATSAPP CLOUD API
+    // -----------------------------------------------------------------------
+    if (isWhatsAppEvent) {
+      for (const entry of body.entry || []) {
+        for (const change of entry.changes || []) {
+          if (change.field !== 'messages') {
+            continue;
+          }
+
+          const value = change.value || {};
+
+          const phoneNumberId =
+            value.metadata?.phone_number_id;
+
+          if (!phoneNumberId) {
+            console.error(
+              '⚠️ WhatsApp webhook missing metadata.phone_number_id.'
+            );
+            continue;
+          }
+
+          const store =
+            await getStoreByPlatformId({
+              whatsappPhoneId: phoneNumberId
+            });
+
+          if (!store) {
+            console.error(
+              `⚠️ No store found for WhatsApp phone number ID: ${phoneNumberId}`
+            );
+            continue;
+          }
+
+          const accessToken =
+            store.whatsapp_access_token ||
+            process.env.META_ACCESS_TOKEN ||
+            '';
+
+          if (!accessToken) {
+            console.error(
+              `⚠️ No WhatsApp access token found for store ${store.id}.`
+            );
+            continue;
+          }
+
+          for (const message of value.messages || []) {
+            const messageId = message.id;
+            const senderWaId = message.from;
+
+            if (!senderWaId) continue;
+
+            if (
+              trackProcessedMessageId(messageId)
+            ) {
+              continue;
+            }
+
+            let aiReply = null;
+
+            if (
+              message.type === 'text' &&
+              message.text?.body
+            ) {
+              aiReply =
+                await processCustomerMessage(
+                  message.text.body,
+                  senderWaId,
+                  store
+                );
+            } else if (
+              message.type === 'image' &&
+              message.image?.id
+            ) {
+              const mediaUrl =
+                await getWhatsAppMediaUrl(
+                  message.image.id,
+                  accessToken
+                );
+
+              if (mediaUrl) {
+                aiReply =
+                  await processCustomerImage(
+                    mediaUrl,
+                    senderWaId,
+                    store
+                  );
+              } else {
+                await saveChatMessage(
+                  store.id,
+                  senderWaId,
+                  'user',
+                  '[Sent a WhatsApp image]'
+                );
+
+                aiReply =
+                  'Hajur, photo analyze garna sakiyena. Kripaya photo feri pathaunu hola.';
+              }
+            }
+
+            if (aiReply) {
+              await sendWhatsAppTextMessage(
+                phoneNumberId,
+                senderWaId,
+                aiReply,
+                accessToken
+              );
+            }
+          }
+        }
+      }
+    }
+
+  } catch (webhookErr) {
+    console.error(
+      '❌ Webhook processing error:',
+      webhookErr.response?.data ||
+        webhookErr.message ||
+        webhookErr
+    );
   }
 });
 
@@ -1627,4 +2440,14 @@ app.post('/api/orders/update-status', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 AI Sales Admin Server running on http://localhost:${PORT}`);
+  console.log(
+    `📱 WhatsApp Embedded Signup config: ${
+      WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID
+        ? 'configured'
+        : 'MISSING (set WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID)'
+    }`
+  );
+  console.log(
+    `📱 WhatsApp Graph API version: ${WHATSAPP_GRAPH_VERSION}`
+  );
 });
