@@ -219,16 +219,116 @@
     /*
      * WhatsApp Embedded Signup
      *
-     * The Meta App ID and Facebook Login for Business Configuration ID are
-     * loaded from the server endpoint below.
+     * IMPORTANT: Embedded Signup returns TWO pieces of information:
+     *   1) FB.login() -> authorization code
+     *   2) postMessage -> WABA ID / phone number ID
+     *
+     * They can arrive in either order, so we store both and submit them only
+     * after both are available. This avoids the "no WABA ID was returned"
+     * error that occurred when we switched to a full-page/manual OAuth flow.
      */
     let whatsappEmbeddedSignupConfig = null;
     let whatsappSdkReady = false;
     let whatsappSignupBusy = false;
     let whatsappSignupSession = null;
+    let whatsappLoginResponse = null;
+    let whatsappCompletionStarted = false;
+
+    function isWhatsAppFinishEvent(eventName) {
+      return [
+        'FINISH',
+        'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING',
+        'FINISH_ONLY_WABA',
+        'FINISH_GRANT_ONLY_API_ACCESS',
+        'FINISH_OBO_MIGRATION'
+      ].includes(eventName);
+    }
+
+    async function tryCompleteWhatsAppSignup() {
+      if (whatsappCompletionStarted || !whatsappSignupBusy) return;
+      if (!whatsappLoginResponse?.authResponse) return;
+      if (!whatsappSignupSession || !isWhatsAppFinishEvent(whatsappSignupSession.event)) return;
+
+      const authResponse = whatsappLoginResponse.authResponse;
+      const signupData =
+        whatsappSignupSession.data &&
+        typeof whatsappSignupSession.data === 'object'
+          ? whatsappSignupSession.data
+          : {};
+
+      const authorizationCode = authResponse.code || null;
+      const accessToken = authResponse.accessToken || null;
+      const wabaId = signupData.waba_id || null;
+      const phoneNumberId = signupData.phone_number_id || null;
+      const businessId = signupData.business_id || signupData.businessId || null;
+
+      if (!authorizationCode && !accessToken) {
+        whatsappSignupBusy = false;
+        alert('Meta did not return an authorization code or access token.');
+        return;
+      }
+
+      if (!wabaId) {
+        console.error('WhatsApp Embedded Signup finished without waba_id:', whatsappSignupSession);
+        whatsappSignupBusy = false;
+        alert('Meta completed signup but did not return the WhatsApp Business Account ID. Please try again.');
+        return;
+      }
+
+      whatsappCompletionStarted = true;
+
+      console.log('✅ WhatsApp Embedded Signup data ready:', {
+        event: whatsappSignupSession.event,
+        waba_id: wabaId,
+        phone_number_id: phoneNumberId,
+        business_id: businessId,
+        has_code: Boolean(authorizationCode),
+        has_access_token: Boolean(accessToken)
+      });
+
+      try {
+        const storeId = getActiveStoreId();
+        if (!storeId) throw new Error('Missing active store ID. Please log in again.');
+
+        const payload = {
+          store_id: storeId,
+          code: authorizationCode,
+          access_token: accessToken,
+          waba_id: wabaId,
+          phone_number_id: phoneNumberId,
+          signup_event: whatsappSignupSession.event || null,
+          signup_event_data: {
+            ...signupData,
+            business_id: businessId
+          }
+        };
+
+        const res = await fetch('/api/whatsapp/embedded-signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || 'The server could not complete WhatsApp onboarding.');
+        }
+
+        alert('WhatsApp Business connected successfully.');
+        window.location.reload();
+      } catch (err) {
+        console.error('WhatsApp onboarding completion error:', err);
+        alert(`WhatsApp connection failed: ${err.message}`);
+      } finally {
+        whatsappSignupBusy = false;
+      }
+    }
 
     window.addEventListener('message', (event) => {
-      // Embedded Signup session messages come from Meta.
+      // Meta documents both facebook.com and web.facebook.com origins for
+      // Embedded Signup messages.
       if (
         event.origin !== 'https://www.facebook.com' &&
         event.origin !== 'https://web.facebook.com'
@@ -249,42 +349,46 @@
           data: message.data || null
         };
 
-        console.log(
-          'WhatsApp Embedded Signup event:',
-          whatsappSignupSession
-        );
+        console.log('WhatsApp Embedded Signup session event:', whatsappSignupSession);
+
+        if (message.event === 'ERROR') {
+          whatsappSignupBusy = false;
+          const errorMessage = message.data?.error_message || 'Meta reported an Embedded Signup error.';
+          alert(`WhatsApp setup failed: ${errorMessage}`);
+          return;
+        }
+
+        if (message.event === 'CANCEL') {
+          whatsappSignupBusy = false;
+          const step = message.data?.current_step || 'unknown step';
+          console.warn('WhatsApp Embedded Signup cancelled at:', step);
+          return;
+        }
+
+        if (isWhatsAppFinishEvent(message.event)) {
+          tryCompleteWhatsAppSignup();
+        }
       } catch (err) {
-        console.warn(
-          'Could not parse WhatsApp Embedded Signup message:',
-          event.data
-        );
+        console.warn('Could not parse WhatsApp Embedded Signup message:', event.data);
       }
     });
 
     async function loadWhatsAppEmbeddedSignupConfig() {
       try {
-        const res = await fetch(
-          '/api/whatsapp/embedded-signup-config',
-          {
-            method: 'GET',
-            credentials: 'include',
-            cache: 'no-store'
-          }
-        );
+        const res = await fetch('/api/whatsapp/embedded-signup-config', {
+          method: 'GET',
+          credentials: 'include',
+          cache: 'no-store'
+        });
 
         const data = await res.json();
 
         if (!res.ok || !data.success) {
-          throw new Error(
-            data.error ||
-            'WhatsApp Embedded Signup configuration is unavailable.'
-          );
+          throw new Error(data.error || 'WhatsApp Embedded Signup configuration is unavailable.');
         }
 
         if (!data.app_id || !data.config_id) {
-          throw new Error(
-            'WhatsApp Embedded Signup configuration is incomplete.'
-          );
+          throw new Error('WhatsApp Embedded Signup configuration is incomplete.');
         }
 
         whatsappEmbeddedSignupConfig = {
@@ -294,10 +398,7 @@
 
         loadFacebookSdk(whatsappEmbeddedSignupConfig.appId);
       } catch (err) {
-        console.error(
-          'WhatsApp Embedded Signup config error:',
-          err
-        );
+        console.error('WhatsApp Embedded Signup config error:', err);
       }
     }
 
@@ -332,116 +433,10 @@
         });
 
         whatsappSdkReady = true;
-
-        console.log(
-          '✅ Facebook JavaScript SDK initialized for WhatsApp Embedded Signup.'
-        );
+        console.log('✅ Facebook JavaScript SDK initialized for WhatsApp Embedded Signup.');
       } catch (err) {
         whatsappSdkReady = false;
-        console.error(
-          'Facebook SDK initialization error:',
-          err
-        );
-      }
-    }
-
-    async function completeWhatsAppEmbeddedSignup(response, storeId) {
-      console.log(
-        'WhatsApp Embedded Signup response:',
-        response
-      );
-
-      if (!response || !response.authResponse) {
-        whatsappSignupBusy = false;
-
-        if (response?.status === 'unknown') {
-          alert('WhatsApp setup was cancelled or not completed.');
-        } else {
-          alert(
-            'WhatsApp Embedded Signup did not return an authorization response.'
-          );
-        }
-
-        return;
-      }
-
-      const authorizationCode =
-        response.authResponse.code || null;
-
-      const accessToken =
-        response.authResponse.accessToken || null;
-
-      if (!authorizationCode && !accessToken) {
-        whatsappSignupBusy = false;
-        alert(
-          'Meta did not return an authorization code or access token.'
-        );
-        return;
-      }
-
-      try {
-        const signupData =
-          whatsappSignupSession?.data &&
-          typeof whatsappSignupSession.data === 'object'
-            ? whatsappSignupSession.data
-            : {};
-
-        const payload = {
-          store_id: storeId,
-
-          // The code is the normal Embedded Signup completion value.
-          code: authorizationCode,
-
-          // Some configurations may return an access token as well.
-          access_token: accessToken,
-
-          // These values come from the WA_EMBEDDED_SIGNUP event.
-          waba_id: signupData.waba_id || null,
-          phone_number_id: signupData.phone_number_id || null,
-
-          signup_event:
-            whatsappSignupSession?.event || null,
-
-          signup_event_data: signupData
-        };
-
-        const res = await fetch(
-          '/api/whatsapp/embedded-signup',
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            credentials: 'include',
-            body: JSON.stringify(payload)
-          }
-        );
-
-        const data = await res.json();
-
-        if (!res.ok || !data.success) {
-          throw new Error(
-            data.error ||
-            'The server could not complete WhatsApp onboarding.'
-          );
-        }
-
-        alert(
-          'WhatsApp Business connected successfully.'
-        );
-
-        window.location.reload();
-      } catch (err) {
-        console.error(
-          'WhatsApp onboarding completion error:',
-          err
-        );
-
-        alert(
-          `WhatsApp connection failed: ${err.message}`
-        );
-      } finally {
-        whatsappSignupBusy = false;
+        console.error('Facebook SDK initialization error:', err);
       }
     }
 
@@ -453,28 +448,70 @@
         return;
       }
 
-      // Use the server-side/manual OAuth flow so the authorization request
-      // and token exchange use one identical redirect_uri.
+      if (!whatsappEmbeddedSignupConfig?.configId) {
+        alert('WhatsApp Embedded Signup is not configured yet. Please reload the dashboard and try again.');
+        return;
+      }
+
+      if (!window.FB || !whatsappSdkReady) {
+        alert('Meta login is still loading. Please wait a moment and try again.');
+        return;
+      }
+
+      whatsappSignupBusy = true;
+      whatsappCompletionStarted = false;
+      whatsappSignupSession = null;
+      whatsappLoginResponse = null;
+
+      // Keep the current store associated with this browser session.
       localStorage.setItem('store_id', storeId);
       setCookie('store_id', storeId);
 
-      window.location.href =
-        `/auth/whatsapp?store_id=${encodeURIComponent(storeId)}`;
+      console.log('➡️ Launching WhatsApp Embedded Signup with config:', whatsappEmbeddedSignupConfig.configId);
+
+      // MUST remain synchronous inside the button click handler.
+      // Meta's Embedded Signup uses Facebook Login for Business + JS SDK.
+      window.FB.login((response) => {
+        console.log('WhatsApp FB.login response:', response);
+
+        whatsappLoginResponse = response || null;
+
+        if (!response || response.status === 'unknown') {
+          whatsappSignupBusy = false;
+          alert('WhatsApp setup was cancelled or Meta did not complete the login.');
+          return;
+        }
+
+        if (!response.authResponse) {
+          whatsappSignupBusy = false;
+          alert('Meta did not return an authorization response.');
+          return;
+        }
+
+        // The session-info message can arrive before or after this callback.
+        tryCompleteWhatsAppSignup();
+      }, {
+        config_id: whatsappEmbeddedSignupConfig.configId,
+        response_type: 'code',
+        override_default_response_type: true,
+        extras: {
+          setup: {},
+          sessionInfoVersion: '3'
+        }
+      });
     }
 
-    // Preload configuration before the user clicks Connect.
-    document.addEventListener(
-      'DOMContentLoaded',
-      loadWhatsAppEmbeddedSignupConfig
-    );
+    document.addEventListener('DOMContentLoaded', loadWhatsAppEmbeddedSignupConfig);
 
-    // Show a one-time success message after the server-side OAuth callback.
     document.addEventListener('DOMContentLoaded', () => {
       const params = new URLSearchParams(window.location.search);
       if (params.get('wa_oauth') === 'success') {
         alert('WhatsApp Business connected successfully.');
         params.delete('wa_oauth');
-        const cleanUrl = `${window.location.pathname}?${params.toString()}`.replace(/\?$/, '');
+        const query = params.toString();
+        const cleanUrl = query
+          ? `${window.location.pathname}?${query}`
+          : window.location.pathname;
         window.history.replaceState({}, document.title, cleanUrl);
       }
     });

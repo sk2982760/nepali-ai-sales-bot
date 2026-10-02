@@ -1804,6 +1804,10 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
       );
     }
 
+    // For Embedded Signup, the WABA and phone IDs are returned by Meta's
+    // WA_EMBEDDED_SIGNUP session-info message. Prefer those IDs over token
+    // introspection because they identify the exact assets the customer
+    // selected during this onboarding session.
     let resolvedWabaId =
       waba_id ||
       signup_event_data?.waba_id ||
@@ -1814,6 +1818,16 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
       phone_number_id ||
       signup_event_data?.phone_number_id ||
       null;
+
+    console.log('📦 WhatsApp Embedded Signup identifiers received:', {
+      signup_event: signup_event || null,
+      waba_id: resolvedWabaId || null,
+      phone_number_id: resolvedPhoneNumberId || null,
+      business_id:
+        signup_event_data?.business_id ||
+        signup_event_data?.businessId ||
+        null
+    });
 
     // Session logging data can contain multiple WABAs.
     if (
@@ -1844,8 +1858,8 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
 
     if (!resolvedWabaId) {
       throw new Error(
-        'WhatsApp signup completed but no WABA ID was returned. ' +
-        'Check your Embedded Signup configuration and permissions.'
+        'WhatsApp signup completed, but Meta did not provide a WABA ID in the WA_EMBEDDED_SIGNUP session data or token. ' +
+        'Make sure the dashboard uses the Meta JavaScript SDK with sessionInfoVersion=3 and try again.'
       );
     }
 
