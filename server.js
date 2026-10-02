@@ -1657,6 +1657,26 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
     // The message event and FB.login callback are independent. If the
     // browser did not receive the WABA ID in time, use debug_token.
     if (!resolvedWabaId) {
+      // First try Meta's direct WABA lookup for the customer-scoped token.
+      try {
+        const meWabaResponse = await axios.get(
+          `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/me/whatsapp_business_accounts`,
+          { params: { access_token: businessToken } }
+        );
+        const firstWaba = meWabaResponse.data?.data?.[0]?.id || null;
+        if (firstWaba) {
+          resolvedWabaId = String(firstWaba);
+          console.log('✅ WABA discovered from /me/whatsapp_business_accounts.');
+        }
+      } catch (lookupError) {
+        console.warn(
+          '⚠️ Direct /me/whatsapp_business_accounts lookup failed:',
+          lookupError.response?.data || lookupError.message
+        );
+      }
+    }
+
+    if (!resolvedWabaId) {
       const discoveredWabaIds =
         await discoverWabaIdsFromBusinessToken(
           businessToken
