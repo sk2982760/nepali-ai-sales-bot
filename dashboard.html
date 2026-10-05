@@ -453,6 +453,7 @@
 
         whatsappSdkReady = true;
         console.log('✅ Facebook JavaScript SDK initialized for WhatsApp Embedded Signup.');
+        console.log('🧩 WhatsApp Dashboard Build: WA-ESU-V7');
       } catch (err) {
         whatsappSdkReady = false;
         console.error('Facebook SDK initialization error:', err);
@@ -487,6 +488,7 @@
       setCookie('store_id', storeId);
 
       console.log('➡️ Launching WhatsApp Embedded Signup with config:', whatsappEmbeddedSignupConfig.configId);
+      console.log('🧩 Launch mode: NO redirect_uri parameter; Coexistence featureType enabled.');
 
       // MUST remain synchronous inside the button click handler.
       // Meta's Embedded Signup uses Facebook Login for Business + JS SDK.

@@ -42,6 +42,7 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   }
 });
 
+const BUILD_ID = 'WA-ESU-V7-NO-REDIRECT';
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
@@ -1358,6 +1359,17 @@ app.get('/api/whatsapp/embedded-signup-config', (req, res) => {
   });
 });
 
+
+app.get('/api/whatsapp/debug', (req, res) => {
+  return res.json({
+    success: true,
+    build_id: BUILD_ID,
+    whatsapp_graph_version: WHATSAPP_GRAPH_VERSION,
+    config_id: WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID || null,
+    token_exchange: 'GET /oauth/access_token WITHOUT redirect_uri'
+  });
+});
+
 /**
  * Discover WABA IDs from the business token when the browser session event
  * did not arrive before the FB.login callback.
@@ -2487,6 +2499,8 @@ app.post('/api/orders/update-status', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 AI Sales Admin Server running on http://localhost:${PORT}`);
+  console.log(`🧩 BUILD: ${BUILD_ID}`);
+  console.log('🔐 WhatsApp code exchange mode: NO redirect_uri');
   console.log(
     `📱 WhatsApp Embedded Signup config: ${
       WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID
