@@ -42,7 +42,7 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   }
 });
 
-const BUILD_ID = 'WA-ESU-V7-NO-REDIRECT';
+const BUILD_ID = 'WA-ESU-V9-ESU-CODE-EXCHANGE';
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
@@ -1366,7 +1366,7 @@ app.get('/api/whatsapp/debug', (req, res) => {
     build_id: BUILD_ID,
     whatsapp_graph_version: WHATSAPP_GRAPH_VERSION,
     config_id: WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID || null,
-    token_exchange: 'POST /oauth/access_token WITH redirect_uri=https://nepali-ai-sales-bot.onrender.com/dashboard'
+    token_exchange: 'POST /oauth/access_token: first WITHOUT redirect_uri; retry redirect_uri= on Meta error 36008'
   });
 });
 
@@ -1598,32 +1598,75 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
         '🔐 Exchanging WhatsApp Embedded Signup code server-side...'
       );
 
-      // IMPORTANT: With Facebook Login for Business + a WhatsApp Embedded
-      // Signup configuration, the authorization code returned by FB.login()
-      // is exchanged server-side WITHOUT supplying a redirect_uri. Meta's
-      // Login for Business Embedded Signup flow owns the redirect internally.
-      // Supplying our own callback URI here causes error 36008 because it does
-      // not match the SDK-managed OAuth dialog redirect.
-      const whatsappOAuthRedirectUri =
-        process.env.WHATSAPP_OAUTH_REDIRECT_URI ||
-        'https://nepali-ai-sales-bot.onrender.com/dashboard';
+      // IMPORTANT: This authorization code is produced by Meta's Embedded
+      // Signup JS SDK. The SDK-managed redirect URI is not controllable from
+      // FB.login(). We therefore try the Embedded Signup code exchange in the
+      // documented SDK-compatible form WITHOUT redirect_uri first. If Meta's
+      // endpoint explicitly requires the field, retry with an empty value,
+      // which is accepted by the Facebook SDK-style flow in current deployments.
+      const tokenEndpoint =
+        `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`;
 
-      console.log('🔐 Exchanging Embedded Signup code with redirect_uri:', whatsappOAuthRedirectUri);
+      const baseTokenParams = {
+        client_id: META_APP_ID,
+        client_secret: META_APP_SECRET,
+        code: String(code),
+        grant_type: 'authorization_code'
+      };
 
-      const tokenResponse = await axios.post(
-        `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`,
-        new URLSearchParams({
-          client_id: META_APP_ID,
-          client_secret: META_APP_SECRET,
-          code: String(code),
-          redirect_uri: whatsappOAuthRedirectUri
-        }).toString(),
-        {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
+      async function exchangeEmbeddedSignupCode(params, label) {
+        console.log(`🔐 Embedded Signup token exchange attempt: ${label}`);
+        const response = await axios.post(
+          tokenEndpoint,
+          new URLSearchParams(params).toString(),
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            validateStatus: () => true
           }
+        );
+
+        if (response.status < 200 || response.status >= 300 || response.data?.error) {
+          const err = new Error(
+            response.data?.error?.message ||
+            `Meta token exchange failed with HTTP ${response.status}.`
+          );
+          err.response = response;
+          throw err;
         }
-      );
+
+        return response.data;
+      }
+
+      let tokenData;
+
+      try {
+        tokenData = await exchangeEmbeddedSignupCode(
+          baseTokenParams,
+          'NO redirect_uri'
+        );
+      } catch (firstError) {
+        const firstMetaError = firstError.response?.data?.error;
+        console.warn(
+          '⚠️ First Embedded Signup token exchange failed:',
+          firstError.response?.data || firstError.message
+        );
+
+        // If Meta still asks for a redirect URI, retry with an empty string.
+        // This avoids guessing the SDK's internal/dynamic redirect location.
+        if (String(firstMetaError?.error_subcode || '') === '36008') {
+          tokenData = await exchangeEmbeddedSignupCode(
+            {
+              ...baseTokenParams,
+              redirect_uri: ''
+            },
+            'redirect_uri=""'
+          );
+        } else {
+          throw firstError;
+        }
+      }
 
       businessToken =
         tokenResponse.data?.access_token || null;
