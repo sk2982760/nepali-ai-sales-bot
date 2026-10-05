@@ -1366,7 +1366,7 @@ app.get('/api/whatsapp/debug', (req, res) => {
     build_id: BUILD_ID,
     whatsapp_graph_version: WHATSAPP_GRAPH_VERSION,
     config_id: WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID || null,
-    token_exchange: 'GET /oauth/access_token WITHOUT redirect_uri'
+    token_exchange: 'POST /oauth/access_token WITH redirect_uri=https://nepali-ai-sales-bot.onrender.com/dashboard'
   });
 });
 
@@ -1604,15 +1604,23 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
       // Login for Business Embedded Signup flow owns the redirect internally.
       // Supplying our own callback URI here causes error 36008 because it does
       // not match the SDK-managed OAuth dialog redirect.
-      console.log('🔐 Exchanging Embedded Signup code without redirect_uri.');
+      const whatsappOAuthRedirectUri =
+        process.env.WHATSAPP_OAUTH_REDIRECT_URI ||
+        'https://nepali-ai-sales-bot.onrender.com/dashboard';
 
-      const tokenResponse = await axios.get(
+      console.log('🔐 Exchanging Embedded Signup code with redirect_uri:', whatsappOAuthRedirectUri);
+
+      const tokenResponse = await axios.post(
         `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`,
+        new URLSearchParams({
+          client_id: META_APP_ID,
+          client_secret: META_APP_SECRET,
+          code: String(code),
+          redirect_uri: whatsappOAuthRedirectUri
+        }).toString(),
         {
-          params: {
-            client_id: META_APP_ID,
-            client_secret: META_APP_SECRET,
-            code: String(code)
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
           }
         }
       );
@@ -2500,7 +2508,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 AI Sales Admin Server running on http://localhost:${PORT}`);
   console.log(`🧩 BUILD: ${BUILD_ID}`);
-  console.log('🔐 WhatsApp code exchange mode: NO redirect_uri');
+  console.log('🔐 WhatsApp code exchange mode: redirect_uri=/dashboard');
   console.log(
     `📱 WhatsApp Embedded Signup config: ${
       WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID
