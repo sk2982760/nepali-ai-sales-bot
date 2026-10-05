@@ -322,17 +322,44 @@
       }
     }
 
-    async function tryCompleteWhatsAppSignup() {
+    let whatsappSubmitTimer = null;
+
+    async function tryCompleteWhatsAppSignup(force = false) {
       if (whatsappCompletionStarted || !whatsappSignupBusy) return;
       if (!whatsappLoginResponse?.authResponse) return;
 
       const authResponse = whatsappLoginResponse.authResponse;
-      await submitWhatsAppAuthorization(
-        authResponse.code || null,
-        authResponse.accessToken || null
-      );
-    }
 
+      // Current WhatsApp Embedded Signup configurations can return the
+      // Business Integration System User token directly as accessToken.
+      // Prefer that credential. Do NOT treat Meta's cb=... postMessage bridge
+      // traffic as an OAuth code.
+      if (authResponse.accessToken) {
+        if (!force && !whatsappSignupSession) {
+          clearTimeout(whatsappSubmitTimer);
+          whatsappSubmitTimer = setTimeout(() => {
+            tryCompleteWhatsAppSignup(true);
+          }, 1500);
+          return;
+        }
+
+        console.log('🔑 WhatsApp FB.login returned an access token; using it directly.');
+        await submitWhatsAppAuthorization(null, authResponse.accessToken);
+        return;
+      }
+
+      if (authResponse.code) {
+        console.log('🔐 WhatsApp FB.login returned an authorization code.');
+        await submitWhatsAppAuthorization(authResponse.code, null);
+        return;
+      }
+
+      console.error('❌ WhatsApp FB.login returned neither accessToken nor code.', {
+        responseKeys: Object.keys(authResponse || {})
+      });
+      whatsappSignupBusy = false;
+      alert('Meta login completed, but no usable WhatsApp authorization credential was returned.');
+    }
     window.addEventListener('message'
 , (event) => {
       // Meta documents both facebook.com and web.facebook.com origins for
@@ -385,7 +412,7 @@
             version: message.version,
             data: message.data
           });
-          tryCompleteWhatsAppSignup();
+          tryCompleteWhatsAppSignup(true);
         }
       } catch (err) {
         console.warn('Could not parse WhatsApp Embedded Signup message:', event.data);
@@ -453,7 +480,7 @@
 
         whatsappSdkReady = true;
         console.log('✅ Facebook JavaScript SDK initialized for WhatsApp Embedded Signup.');
-        console.log('🧩 WhatsApp Dashboard Build: WA-ESU-V7');
+        console.log('🧩 WhatsApp Dashboard Build: WA-ESU-V10-DIRECT-TOKEN');
       } catch (err) {
         whatsappSdkReady = false;
         console.error('Facebook SDK initialization error:', err);
