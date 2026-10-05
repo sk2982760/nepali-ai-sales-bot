@@ -42,7 +42,7 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   }
 });
 
-const BUILD_ID = 'WA-ESU-V10-DIRECT-TOKEN';
+const BUILD_ID = 'WA-ESU-V11-CODE-EXCHANGE-FIX';
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
@@ -1366,7 +1366,8 @@ app.get('/api/whatsapp/debug', (req, res) => {
     build_id: BUILD_ID,
     whatsapp_graph_version: WHATSAPP_GRAPH_VERSION,
     config_id: WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID || null,
-    token_exchange: 'PREFER FB.login authResponse.accessToken; OAuth code exchange is fallback only'
+    token_exchange: 'GET /oauth/access_token with client_id, client_secret, code ONLY (no redirect_uri)',
+    redirect_uri_used_by_whatsapp_exchange: false
   });
 });
 
@@ -1592,49 +1593,88 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
 
     let businessToken = null;
 
-    // IMPORTANT: With the WhatsApp Embedded Signup configuration used here,
-    // FB.login() can return the Business Integration System User token directly
-    // as authResponse.accessToken. Use that token first. The `cb=...&code=...`
-    // string seen in window.postMessage is Facebook's internal SDK bridge value,
-    // not the OAuth authorization code for this server exchange.
-    if (access_token) {
-      businessToken = String(access_token).trim();
-      console.log('🔑 Using FB.login authResponse.accessToken directly; no OAuth code exchange.');
-    } else if (code) {
-      console.log('⚠️ No direct access token was returned; falling back to OAuth code exchange.');
+    // Meta's Embedded Signup response_type=code returns an exchangeable code.
+    if (code) {
+      console.log(
+        '🔐 Exchanging WhatsApp Embedded Signup code server-side...'
+      );
 
+      // IMPORTANT:
+      // Meta's current WhatsApp Embedded Signup code exchange uses the
+      // authorization code returned by FB.login() and does NOT send a
+      // redirect_uri parameter to /oauth/access_token.
+      //
+      // Sending '/dashboard' here is wrong because '/dashboard' is your
+      // application page, not the redirect context used to mint this
+      // Embedded Signup code. It causes Meta OAuth error 36008.
+      //
+      // Keep this request deliberately minimal:
+      //   client_id + client_secret + code
+      //
+      // Do not add redirect_uri, grant_type, or any guessed callback URL.
       const tokenEndpoint =
         `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`;
 
       const tokenParams = {
         client_id: META_APP_ID,
         client_secret: META_APP_SECRET,
-        code: String(code),
-        grant_type: 'authorization_code'
+        code: String(code)
       };
 
-      const response = await axios.post(
-        tokenEndpoint,
-        new URLSearchParams(tokenParams).toString(),
-        {
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          validateStatus: () => true
-        }
+      console.log(
+        '🔐 WhatsApp Embedded Signup token exchange: GET /oauth/access_token (no redirect_uri)'
       );
 
-      if (response.status < 200 || response.status >= 300 || response.data?.error) {
-        console.error('❌ WhatsApp authorization-code exchange failed:', response.data);
+      const tokenRes = await axios.get(tokenEndpoint, {
+        params: tokenParams,
+        validateStatus: () => true
+      });
+
+      const tokenData = tokenRes.data;
+
+      if (
+        tokenRes.status < 200 ||
+        tokenRes.status >= 300 ||
+        tokenData?.error
+      ) {
+        const metaError = tokenData?.error;
+
+        console.error(
+          '❌ WhatsApp authorization-code exchange failed:',
+          tokenData || `HTTP ${tokenRes.status}`
+        );
+
+        if (String(metaError?.error_subcode || '') === '36008') {
+          throw new Error(
+            'Meta still returned OAuth error 36008 even though the server sent NO redirect_uri. ' +
+            'This usually means the authorization code was created by a different OAuth flow/configuration, ' +
+            'or Render is still running an older server.js. Confirm the deployed build is ' +
+            `${BUILD_ID} and that the browser launches WhatsApp Embedded Signup with response_type="code".`
+          );
+        }
+
         throw new Error(
-          response.data?.error?.message ||
-          `Meta token exchange failed with HTTP ${response.status}.`
+          metaError?.message ||
+          `Meta token exchange failed with HTTP ${tokenRes.status}.`
         );
       }
 
-      businessToken = response.data?.access_token || null;
+      businessToken = String(tokenData?.access_token || '').trim();
+
+      if (!businessToken) {
+        throw new Error(
+          'Meta returned a successful response but no WhatsApp business access token.'
+        );
+      }
+    } else {
+      // Fallback for configurations returning accessToken in authResponse.
+      businessToken = String(access_token).trim();
     }
 
     if (!businessToken) {
-      throw new Error('Meta did not return a usable WhatsApp access token.');
+      throw new Error(
+        'Unable to obtain a WhatsApp business access token.'
+      );
     }
 
     const normalizeId = (value) => {
@@ -2501,7 +2541,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 AI Sales Admin Server running on http://localhost:${PORT}`);
   console.log(`🧩 BUILD: ${BUILD_ID}`);
-  console.log('🔐 WhatsApp code exchange mode: redirect_uri=/dashboard');
+  console.log('🔐 WhatsApp code exchange mode: code → /oauth/access_token (NO redirect_uri)');
   console.log(
     `📱 WhatsApp Embedded Signup config: ${
       WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID
@@ -2512,4 +2552,5 @@ app.listen(PORT, () => {
   console.log(
     `📱 WhatsApp Graph API version: ${WHATSAPP_GRAPH_VERSION}`
   );
+  console.log('🛠️ WhatsApp token exchange: redirect_uri is intentionally NOT sent');
 });
