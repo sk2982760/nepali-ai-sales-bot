@@ -475,12 +475,12 @@
           appId,
           cookie: true,
           xfbml: true,
-          version: 'v24.0'
+          version: 'v25.0'
         });
 
         whatsappSdkReady = true;
         console.log('✅ Facebook JavaScript SDK initialized for WhatsApp Embedded Signup.');
-        console.log('🧩 WhatsApp Dashboard Build: WA-ESU-V10-DIRECT-TOKEN');
+        console.log('🧩 WhatsApp Dashboard Build: WA-ESU-V13-FRONTEND-ESU-FIX');
       } catch (err) {
         whatsappSdkReady = false;
         console.error('Facebook SDK initialization error:', err);
@@ -515,7 +515,7 @@
       setCookie('store_id', storeId);
 
       console.log('➡️ Launching WhatsApp Embedded Signup with config:', whatsappEmbeddedSignupConfig.configId);
-      console.log('🧩 Launch mode: Facebook JS SDK + Coexistence featureType; OAuth callback is the dashboard page.');
+      console.log('🧩 Launch mode: Facebook JS SDK + Login for Business + Coexistence featureType.');
 
       // MUST remain synchronous inside the button click handler.
       // Meta's Embedded Signup uses Facebook Login for Business + JS SDK.
@@ -542,14 +542,15 @@
         config_id: whatsappEmbeddedSignupConfig.configId,
         response_type: 'code',
         override_default_response_type: true,
-        // Embedded Signup v4 supplies the WA_EMBEDDED_SIGNUP session
-        // information without the legacy sessionInfoVersion override.
+        // Request session information from Meta so the WABA/phone details
+        // arrive through the WA_EMBEDDED_SIGNUP postMessage event.
         // This selector is required for a business that already uses the
         // WhatsApp Business app. It launches the Coexistence onboarding path
         // instead of the normal new-number Cloud API path.
         extras: {
           setup: {},
-          featureType: 'whatsapp_business_app_onboarding'
+          featureType: 'whatsapp_business_app_onboarding',
+          sessionInfoVersion: '3'
         }
       });
     }
@@ -999,32 +1000,19 @@ async function loadDashboardData() {
         `"${(o.phone_number || '').replace(/"/g, '""')}"`,
         `"${(o.delivery_location || '').replace(/"/g, '""')}"`,
         `"${(o.product_title || '').replace(/"/g, '""')}"`,
-        o.quantity || 1,
-        (Number(o.total_price_npr) || 0) + (Number(o.delivery_charge_npr) || 0),
-        `"${o.status || 'pending'}"`
+        `"${o.quantity || 1}"`,
+        `"${((Number(o.total_price_npr) || 0) + (Number(o.delivery_charge_npr) || 0)).toLocaleString()}"`,
+        `"${(o.status || 'pending').replace(/"/g, '""')}"`
       ]);
 
-      const csvString = [headers.join(','), ...rows.map(e => e.join(','))].join('\r\n');
-      const blob = new Blob(['\ufeff' + csvString], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      
+      const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\r\n');
+      const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const downloadUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.setAttribute('href', url);
-      link.setAttribute('download', `orders_export_${new Date().toISOString().slice(0, 10)}.csv`);
+      link.href = downloadUrl;
+      link.download = 'orders.csv';
       document.body.appendChild(link);
       link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      link.remove();
+      URL.revokeObjectURL(downloadUrl);
     }
-
-    function handleLogout() {
-      document.cookie = "store_id=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
-      localStorage.removeItem('store_id');
-      localStorage.removeItem('supabase_session');
-      window.location.href = '/login';
-    }
-
-    document.addEventListener('DOMContentLoaded', loadDashboardData);
-  </script>
-</body>
-</html>
