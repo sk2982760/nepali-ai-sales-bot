@@ -1603,7 +1603,9 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
       const tokenEndpoint =
         `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`;
 
-      const redirectUri = '';
+      const redirectUri =
+  process.env.WHATSAPP_OAUTH_REDIRECT_URI ||
+  'https://nepali-ai-sales-bot.onrender.com/dashboard';
 
       console.log(
         '🔐 WhatsApp token exchange redirect_uri:',
