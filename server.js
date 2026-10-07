@@ -1593,89 +1593,74 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
 
     let businessToken = null;
 
-    // Meta's Embedded Signup response_type=code returns an exchangeable code.
-    if (code) {
+    if (access_token) {
+      businessToken = String(access_token).trim();
+    } else if (code) {
       console.log(
-        '🔐 Exchanging WhatsApp Embedded Signup code server-side...'
+        '🔐 Exchanging WhatsApp Embedded Signup authorization code server-side...'
       );
 
-      // IMPORTANT:
-      // When the authorization code is created by Meta's Facebook JS SDK
-      // FB.login() Embedded Signup flow, the SDK does not expose a custom
-      // redirect_uri. In this flow, Meta may bind the code to an EMPTY
-      // redirect_uri value. The token exchange must therefore send
-      // redirect_uri="" rather than '/dashboard' or an omitted value.
-      //
-      // Sending '/dashboard' causes OAuth error 36008 because /dashboard
-      // was not the redirect context used to mint the code.
       const tokenEndpoint =
         `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`;
 
       const redirectUri =
-  `https://nepali-ai-sales-bot.onrender.com/dashboard?store_id=${encodeURIComponent(String(store_id))}`;
-
-console.log(
-  '🔐 WhatsApp token exchange redirect_uri:',
-  redirectUri
-);
-
-const tokenParams = {
-  client_id: META_APP_ID,
-  client_secret: META_APP_SECRET,
-  code: String(code),
-  grant_type: 'authorization_code',
-  redirect_uri: redirectUri
-};
+        'https://nepali-ai-sales-bot.onrender.com/dashboard';
 
       console.log(
-        '🔐 WhatsApp Embedded Signup token exchange: GET /oauth/access_token (redirect_uri=EMPTY)'
+        '🔐 WhatsApp token exchange redirect_uri:',
+        redirectUri
       );
 
-      const tokenRes = await axios.get(tokenEndpoint, {
-        params: tokenParams,
-        validateStatus: () => true
-      });
+      const tokenParams = {
+        client_id: META_APP_ID,
+        client_secret: META_APP_SECRET,
+        code: String(code),
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri
+      };
 
-      const tokenData = tokenRes.data;
+      const response = await axios.post(
+        tokenEndpoint,
+        new URLSearchParams(tokenParams).toString(),
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          validateStatus: () => true
+        }
+      );
 
       if (
-        tokenRes.status < 200 ||
-        tokenRes.status >= 300 ||
-        tokenData?.error
+        response.status < 200 ||
+        response.status >= 300 ||
+        response.data?.error
       ) {
-        const metaError = tokenData?.error;
-
         console.error(
           '❌ WhatsApp authorization-code exchange failed:',
-          tokenData || `HTTP ${tokenRes.status}`
+          response.data
         );
 
-        if (String(metaError?.error_subcode || '') === '36008') {
-          throw new Error(
-            'Meta returned OAuth error 36008 even with redirect_uri="". ' +
-            'This means the authorization code was not minted with the same redirect context used by the token exchange. ' +
-            'The browser must launch Facebook JS SDK Embedded Signup with response_type="code" and ' +
-            'override_default_response_type=true using the same config_id. Confirm the deployed build is ' +
-            `${BUILD_ID}.`
-          );
-        }
-
         throw new Error(
-          metaError?.message ||
-          `Meta token exchange failed with HTTP ${tokenRes.status}.`
+          response.data?.error?.message ||
+            `Meta token exchange failed with HTTP ${response.status}.`
         );
       }
 
-      businessToken = String(tokenData?.access_token || '').trim();
+      businessToken = response.data?.access_token || null;
 
       if (!businessToken) {
         throw new Error(
-          'Meta returned a successful response but no WhatsApp business access token.'
+          'Meta authorization-code exchange succeeded but no access token was returned.'
         );
       }
+
+      console.log(
+        '✅ WhatsApp authorization code exchanged successfully.'
+      );
     } else {
-      // Fallback for configurations returning accessToken in authResponse.
-      businessToken = String(access_token).trim();
+      throw new Error(
+        'Meta did not return an authorization code or access token.'
+      );
     }
 
     if (!businessToken) {
