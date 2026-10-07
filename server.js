@@ -1611,12 +1611,21 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
       const tokenEndpoint =
         `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`;
 
-      const tokenParams = {
-        client_id: META_APP_ID,
-        client_secret: META_APP_SECRET,
-        code: String(code),
-        redirect_uri: ''
-      };
+      const redirectUri =
+  `https://nepali-ai-sales-bot.onrender.com/dashboard?store_id=${encodeURIComponent(String(store_id))}`;
+
+console.log(
+  '🔐 WhatsApp token exchange redirect_uri:',
+  redirectUri
+);
+
+const tokenParams = {
+  client_id: META_APP_ID,
+  client_secret: META_APP_SECRET,
+  code: String(code),
+  grant_type: 'authorization_code',
+  redirect_uri: redirectUri
+};
 
       console.log(
         '🔐 WhatsApp Embedded Signup token exchange: GET /oauth/access_token (redirect_uri=EMPTY)'
