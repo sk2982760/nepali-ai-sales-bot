@@ -42,7 +42,7 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   }
 });
 
-const BUILD_ID = 'WA-ESU-V11-CODE-EXCHANGE-FIX';
+const BUILD_ID = 'WA-ESU-V12-ESU-EMPTY-REDIRECT-FIX';
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
@@ -1366,8 +1366,8 @@ app.get('/api/whatsapp/debug', (req, res) => {
     build_id: BUILD_ID,
     whatsapp_graph_version: WHATSAPP_GRAPH_VERSION,
     config_id: WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID || null,
-    token_exchange: 'GET /oauth/access_token with client_id, client_secret, code ONLY (no redirect_uri)',
-    redirect_uri_used_by_whatsapp_exchange: false
+    token_exchange: 'GET /oauth/access_token with client_id, client_secret, code, redirect_uri=EMPTY',
+    redirect_uri_used_by_whatsapp_exchange: 'empty string' 
   });
 });
 
@@ -1600,29 +1600,26 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
       );
 
       // IMPORTANT:
-      // Meta's current WhatsApp Embedded Signup code exchange uses the
-      // authorization code returned by FB.login() and does NOT send a
-      // redirect_uri parameter to /oauth/access_token.
+      // When the authorization code is created by Meta's Facebook JS SDK
+      // FB.login() Embedded Signup flow, the SDK does not expose a custom
+      // redirect_uri. In this flow, Meta may bind the code to an EMPTY
+      // redirect_uri value. The token exchange must therefore send
+      // redirect_uri="" rather than '/dashboard' or an omitted value.
       //
-      // Sending '/dashboard' here is wrong because '/dashboard' is your
-      // application page, not the redirect context used to mint this
-      // Embedded Signup code. It causes Meta OAuth error 36008.
-      //
-      // Keep this request deliberately minimal:
-      //   client_id + client_secret + code
-      //
-      // Do not add redirect_uri, grant_type, or any guessed callback URL.
+      // Sending '/dashboard' causes OAuth error 36008 because /dashboard
+      // was not the redirect context used to mint the code.
       const tokenEndpoint =
         `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`;
 
       const tokenParams = {
         client_id: META_APP_ID,
         client_secret: META_APP_SECRET,
-        code: String(code)
+        code: String(code),
+        redirect_uri: ''
       };
 
       console.log(
-        '🔐 WhatsApp Embedded Signup token exchange: GET /oauth/access_token (no redirect_uri)'
+        '🔐 WhatsApp Embedded Signup token exchange: GET /oauth/access_token (redirect_uri=EMPTY)'
       );
 
       const tokenRes = await axios.get(tokenEndpoint, {
@@ -1646,10 +1643,11 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
 
         if (String(metaError?.error_subcode || '') === '36008') {
           throw new Error(
-            'Meta still returned OAuth error 36008 even though the server sent NO redirect_uri. ' +
-            'This usually means the authorization code was created by a different OAuth flow/configuration, ' +
-            'or Render is still running an older server.js. Confirm the deployed build is ' +
-            `${BUILD_ID} and that the browser launches WhatsApp Embedded Signup with response_type="code".`
+            'Meta returned OAuth error 36008 even with redirect_uri="". ' +
+            'This means the authorization code was not minted with the same redirect context used by the token exchange. ' +
+            'The browser must launch Facebook JS SDK Embedded Signup with response_type="code" and ' +
+            'override_default_response_type=true using the same config_id. Confirm the deployed build is ' +
+            `${BUILD_ID}.`
           );
         }
 
@@ -2541,7 +2539,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 AI Sales Admin Server running on http://localhost:${PORT}`);
   console.log(`🧩 BUILD: ${BUILD_ID}`);
-  console.log('🔐 WhatsApp code exchange mode: code → /oauth/access_token (NO redirect_uri)');
+  console.log('🔐 WhatsApp code exchange mode: code → /oauth/access_token (redirect_uri=EMPTY)');
   console.log(
     `📱 WhatsApp Embedded Signup config: ${
       WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID
@@ -2552,5 +2550,5 @@ app.listen(PORT, () => {
   console.log(
     `📱 WhatsApp Graph API version: ${WHATSAPP_GRAPH_VERSION}`
   );
-  console.log('🛠️ WhatsApp token exchange: redirect_uri is intentionally NOT sent');
+  console.log('🛠️ WhatsApp token exchange: redirect_uri is sent as an EMPTY string for FB.login() Embedded Signup');
 });
