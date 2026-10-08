@@ -42,7 +42,7 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   }
 });
 
-const BUILD_ID = 'WA-ESU-V12-ESU-EMPTY-REDIRECT-FIX';
+const BUILD_ID = 'WA-ESU-V14-CODE-EXCHANGE-NO-REDIRECT-URI';
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
@@ -1366,8 +1366,8 @@ app.get('/api/whatsapp/debug', (req, res) => {
     build_id: BUILD_ID,
     whatsapp_graph_version: WHATSAPP_GRAPH_VERSION,
     config_id: WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID || null,
-    token_exchange: 'GET /oauth/access_token with client_id, client_secret, code, redirect_uri=EMPTY',
-    redirect_uri_used_by_whatsapp_exchange: 'empty string' 
+    token_exchange: 'GET /oauth/access_token with client_id, client_secret, code',
+    redirect_uri_used_by_whatsapp_exchange: 'not sent' 
   });
 });
 
@@ -1603,33 +1603,23 @@ app.post('/api/whatsapp/embedded-signup', async (req, res) => {
       const tokenEndpoint =
         `https://graph.facebook.com/${WHATSAPP_GRAPH_VERSION}/oauth/access_token`;
 
-      const redirectUri =
-  process.env.WHATSAPP_OAUTH_REDIRECT_URI ||
-  'https://nepali-ai-sales-bot.onrender.com/dashboard';
-
-      console.log(
-        '🔐 WhatsApp token exchange redirect_uri:',
-        redirectUri
-      );
-
+      // WhatsApp Embedded Signup code exchange: do not send redirect_uri here.
+      // The authorization code is created by the Meta Embedded Signup JS SDK
+      // flow, and this exchange uses the app credentials + the code only.
       const tokenParams = {
         client_id: META_APP_ID,
         client_secret: META_APP_SECRET,
-        code: String(code),
-        grant_type: 'authorization_code',
-        redirect_uri: redirectUri
+        code: String(code)
       };
 
-      const response = await axios.post(
-        tokenEndpoint,
-        new URLSearchParams(tokenParams).toString(),
-        {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
-          },
-          validateStatus: () => true
-        }
+      console.log(
+        '🔐 WhatsApp token exchange: GET /oauth/access_token (no redirect_uri)'
       );
+
+      const response = await axios.get(tokenEndpoint, {
+        params: tokenParams,
+        validateStatus: () => true
+      });
 
       if (
         response.status < 200 ||
@@ -2534,7 +2524,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 AI Sales Admin Server running on http://localhost:${PORT}`);
   console.log(`🧩 BUILD: ${BUILD_ID}`);
-  console.log('🔐 WhatsApp code exchange mode: code → /oauth/access_token (redirect_uri=EMPTY)');
+  console.log('🔐 WhatsApp code exchange mode: code → /oauth/access_token (redirect_uri NOT SENT)');
   console.log(
     `📱 WhatsApp Embedded Signup config: ${
       WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID
@@ -2545,5 +2535,5 @@ app.listen(PORT, () => {
   console.log(
     `📱 WhatsApp Graph API version: ${WHATSAPP_GRAPH_VERSION}`
   );
-  console.log('🛠️ WhatsApp token exchange: redirect_uri is sent as an EMPTY string for FB.login() Embedded Signup');
+  console.log('🛠️ WhatsApp token exchange: redirect_uri is NOT sent for FB.login() Embedded Signup');
 });

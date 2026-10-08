@@ -515,13 +515,8 @@ function launchWhatsAppSignup() {
   setCookie('store_id', storeId);
 
   // IMPORTANT:
-  // Embedded Signup must be launched from the same fixed redirect context
-  // that the server uses for the authorization-code exchange.
-  window.history.replaceState(
-    null,
-    '',
-    '/dashboard'
-  );
+  // Do not try to manufacture an OAuth redirect_uri from the current page.
+  // Meta's Embedded Signup JS SDK manages this OAuth context.
 
   console.log(
     '➡️ Launching WhatsApp Embedded Signup with config:',
