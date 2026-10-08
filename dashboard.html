@@ -480,7 +480,7 @@
 
         whatsappSdkReady = true;
         console.log('✅ Facebook JavaScript SDK initialized for WhatsApp Embedded Signup.');
-        console.log('🧩 WhatsApp Dashboard Build: WA-ESU-V13-FRONTEND-ESU-FIX');
+        console.log('🧩 WhatsApp Dashboard Build: WA-ESU-V15-FINAL-REDIRECT-FIX');
       } catch (err) {
         whatsappSdkReady = false;
         console.error('Facebook SDK initialization error:', err);
@@ -515,8 +515,19 @@ function launchWhatsAppSignup() {
   setCookie('store_id', storeId);
 
   // IMPORTANT:
-  // Do not try to manufacture an OAuth redirect_uri from the current page.
-  // Meta's Embedded Signup JS SDK manages this OAuth context.
+  // Meta's JS SDK binds the authorization code to the page URL used when
+  // FB.login() is launched. Keep that URL canonical and identical to the
+  // redirect_uri used by the server-side code exchange.
+  //
+  // Store identity is preserved separately in localStorage + cookie.
+  const whatsappOAuthRedirectUri =
+    `${window.location.origin}/dashboard`;
+
+  window.history.replaceState(
+    null,
+    '',
+    '/dashboard'
+  );
 
   console.log(
     '➡️ Launching WhatsApp Embedded Signup with config:',
@@ -525,6 +536,11 @@ function launchWhatsAppSignup() {
 
   console.log(
     '🧩 Launch mode: Facebook JS SDK + Login for Business + Coexistence'
+  );
+
+  console.log(
+    '🔗 WhatsApp OAuth redirect context:',
+    whatsappOAuthRedirectUri
   );
 
   window.FB.login((response) => {
