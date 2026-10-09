@@ -43,7 +43,7 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   }
 });
 
-const BUILD_ID = 'WA-ESU-V17-EMBEDDED-SDK-SESSION-FIX';
+const BUILD_ID = 'WA-ESU-V18-ESU-V4-DIAGNOSTIC-FIX';
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
@@ -1393,7 +1393,7 @@ app.get('/api/whatsapp/debug', (req, res) => {
     config_id: WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID || null,
     token_exchange: 'POST /oauth/access_token with client_id, client_secret, code, grant_type, redirect_uri',
     redirect_uri_used_by_whatsapp_exchange: WHATSAPP_JS_SDK_REDIRECT_URI,
-    launch_mode: 'Facebook JavaScript SDK FB.login Embedded Signup with WA_EMBEDDED_SIGNUP session events'
+    launch_mode: 'Facebook JS SDK FB.login; Login for Business v4; Coexistence; session-event diagnostics'
   });
 });
 

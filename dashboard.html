@@ -366,7 +366,7 @@
             whatsappSubmitTimer = null;
             console.error('❌ No WA_EMBEDDED_SIGNUP FINISH event received. No token exchange was attempted.');
             alert(
-              'Meta did not send the WhatsApp Embedded Signup completion event to the dashboard. No connection was saved. Please retry from the dashboard. If it happens again, verify the Login for Business config and that featureType is whatsapp_business_app_onboarding.'
+              'No WA_EMBEDDED_SIGNUP completion event was accepted. No connection was saved. Open DevTools Console and check for V18 diagnostic messages. Confirm the Meta Login for Business configuration is Embedded Signup v4, uses the same app ID as this page, and supports WhatsApp Business App Coexistence; featureType is whatsapp_business_app_onboarding.'
             );
           }, 10000);
         }
@@ -384,63 +384,101 @@
       console.log('✅ Submitting credentials with Embedded Signup session event:', whatsappSignupSession.event);
       await submitWhatsAppAuthorization(credential.code, credential.accessToken);
     }
-    window.addEventListener('message'
-, (event) => {
-      // Meta documents both facebook.com and web.facebook.com origins for
-      // Embedded Signup messages.
-      if (!event.origin || !event.origin.endsWith('.facebook.com') && event.origin !== 'https://facebook.com') {
+    function isTrustedMetaSignupOrigin(origin) {
+      try {
+        const hostname = new URL(origin).hostname.toLowerCase();
+        return hostname === 'facebook.com' || hostname.endsWith('.facebook.com');
+      } catch {
+        return false;
+      }
+    }
+
+    window.addEventListener('message', (event) => {
+      const origin = event.origin || '(unknown origin)';
+      let message = event.data;
+
+      // FB's SDK emits other OAuth bridge messages too. Parse JSON when possible,
+      // but only act on the explicitly typed Embedded Signup session event.
+      if (typeof message === 'string') {
+        try {
+          message = JSON.parse(message);
+        } catch {
+          if (isTrustedMetaSignupOrigin(event.origin)) {
+            console.debug('[WA ESU V18] Ignored non-JSON Meta postMessage:', { origin });
+          }
+          return;
+        }
+      }
+
+      if (!message || typeof message !== 'object') return;
+
+      if (message.type !== 'WA_EMBEDDED_SIGNUP') {
+        if (isTrustedMetaSignupOrigin(event.origin)) {
+          console.debug('[WA ESU V18] Meta message is not an Embedded Signup session event:', {
+            origin,
+            type: message.type || null,
+            event: message.event || null
+          });
+        }
         return;
       }
 
-      try {
-        let message = event.data;
-        if (typeof message === 'string') {
-          try {
-            message = JSON.parse(message);
-          } catch {
-            // Facebook's OAuth plumbing can post URL/query-string messages.
-            // They are not Embedded Signup session events, so ignore them.
-            return;
-          }
-        }
-
-        if (!message || message.type !== 'WA_EMBEDDED_SIGNUP') return;
-
-        console.log('📩 Raw WA_EMBEDDED_SIGNUP message:', message);
-
-        whatsappSignupSession = {
-          event: message.event || null,
-          version: message.version || null,
-          data: message.data || null
-        };
-
-        console.log('WhatsApp Embedded Signup session event:', whatsappSignupSession);
-
-        if (message.event === 'ERROR') {
-          whatsappSignupBusy = false;
-          const errorMessage = message.data?.error_message || 'Meta reported an Embedded Signup error.';
-          alert(`WhatsApp setup failed: ${errorMessage}`);
-          return;
-        }
-
-        if (message.event === 'CANCEL') {
-          whatsappSignupBusy = false;
-          const step = message.data?.current_step || 'unknown step';
-          console.warn('WhatsApp Embedded Signup cancelled at:', step);
-          return;
-        }
-
-        if (isWhatsAppFinishEvent(message.event)) {
-          console.log('✅ WhatsApp Embedded Signup completion event received:', {
-            event: message.event,
-            version: message.version,
-            data: message.data
-          });
-          tryCompleteWhatsAppSignup();
-        }
-      } catch (err) {
-        console.warn('Could not parse WhatsApp Embedded Signup message:', event.data);
+      if (!isTrustedMetaSignupOrigin(event.origin)) {
+        console.warn('[WA ESU V18] Rejected Embedded Signup message from untrusted origin:', origin);
+        return;
       }
+
+      console.log('[WA ESU V18] Accepted Embedded Signup postMessage:', {
+        origin,
+        type: message.type,
+        event: message.event || null,
+        version: message.version || null,
+        dataKeys: message.data && typeof message.data === 'object'
+          ? Object.keys(message.data)
+          : []
+      });
+
+      whatsappSignupSession = {
+        event: message.event || null,
+        version: message.version || null,
+        data: message.data || null
+      };
+
+      console.log('WhatsApp Embedded Signup session event:', whatsappSignupSession);
+
+      if (message.event === 'ERROR') {
+        whatsappSignupBusy = false;
+        clearTimeout(whatsappSubmitTimer);
+        whatsappSubmitTimer = null;
+        const errorMessage = message.data?.error_message || 'Meta reported an Embedded Signup error.';
+        alert(`WhatsApp setup failed: ${errorMessage}`);
+        return;
+      }
+
+      if (message.event === 'CANCEL') {
+        whatsappSignupBusy = false;
+        clearTimeout(whatsappSubmitTimer);
+        whatsappSubmitTimer = null;
+        const step = message.data?.current_step || 'unknown step';
+        console.warn('WhatsApp Embedded Signup cancelled at:', step);
+        return;
+      }
+
+      if (isWhatsAppFinishEvent(message.event)) {
+        console.log('✅ WhatsApp Embedded Signup completion event received:', {
+          event: message.event,
+          version: message.version,
+          hasWabaId: Boolean(message.data?.waba_id || message.data?.waba?.id || message.data?.waba_ids?.length),
+          hasPhoneNumberId: Boolean(message.data?.phone_number_id || message.data?.phone?.id)
+        });
+        tryCompleteWhatsAppSignup();
+        return;
+      }
+
+      console.warn('[WA ESU V18] Received WA_EMBEDDED_SIGNUP message with an unrecognized event:', {
+        event: message.event || null,
+        version: message.version || null
+      });
     });
 
     async function loadWhatsAppEmbeddedSignupConfig() {
@@ -504,7 +542,7 @@
 
         whatsappSdkReady = true;
         console.log('✅ Facebook JavaScript SDK initialized for WhatsApp Embedded Signup.');
-        console.log('🧩 WhatsApp Dashboard Build: WA-ESU-V17-EMBEDDED-SDK-SESSION-FIX');
+        console.log('🧩 WhatsApp Dashboard Build: WA-ESU-V18-ESU-V4-DIAGNOSTIC-FIX');
       } catch (err) {
         whatsappSdkReady = false;
         console.error('Facebook SDK initialization error:', err);
@@ -543,7 +581,7 @@ function launchWhatsAppSignup() {
   window.history.replaceState(null, '', '/dashboard');
 
   console.log('➡️ Launching WhatsApp Embedded Signup with config:', whatsappEmbeddedSignupConfig.configId);
-  console.log('🧩 WhatsApp Dashboard Build: WA-ESU-V17-EMBEDDED-SDK-SESSION-FIX');
+  console.log('🧩 WhatsApp Dashboard Build: WA-ESU-V18-ESU-V4-DIAGNOSTIC-FIX');
   console.log('🔗 Expected JS SDK redirect context:', expectedRedirectUri);
   console.log('🧩 Launch mode: FB.login + Login for Business + Coexistence');
 
@@ -575,8 +613,7 @@ function launchWhatsAppSignup() {
     override_default_response_type: true,
     extras: {
       setup: {},
-      featureType: 'whatsapp_business_app_onboarding',
-      sessionInfoVersion: '3'
+      featureType: 'whatsapp_business_app_onboarding'
     }
   });
 }
